@@ -95,7 +95,9 @@ mkdir -p "$PREFIX" 2>/dev/null || die "$EXIT_ARGS" "cannot create $PREFIX (use -
 PREFIX=$(winpath "$(cd "$PREFIX" && pwd)")
 CONF="$PREFIX/composer.env"
 UPDATE=0
-[ -f "$CONF" ] && UPDATE=1
+# composer.env may be pre-seeded (e.g. SB_SMTP_* before the first install): an installation exists
+# once the host names are in it
+[ -n "$(env_get "$CONF" MATRIX_HOST)" ] && UPDATE=1
 say "$( [ "$UPDATE" = 1 ] && echo "Existing installation in $PREFIX: updating" || echo "New installation in $PREFIX")"
 
 # ---------------------------------------------------------------------------------------- settings
