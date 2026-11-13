@@ -7,6 +7,7 @@ Environment (from tests/suite.sh): MATRIX_HOST SB_HOST SBCHAT_HOST ORIGIN RESP_A
 CC_TOKEN DID WELCOME MERCI NONCE (responder). Prints PASS/FAIL lines, and "ROOM <scenario> <room id>" lines
 for the checks done afterwards on the host (Law 25 purge).
 """
+import hashlib
 import json
 import os
 import sys
@@ -49,7 +50,13 @@ def check(name, ok, detail=""):
 def sim(key):
     if key not in SIMS:
         user = E["RESP_A"] if key == "a" else E["RESP_B"]
-        SIMS[key] = lib.Sim(user, f"suite-{key}-{uuid.uuid4().hex[:4]}", cross_sign=(key == "a"), settle=6)
+        try:
+            SIMS[key] = lib.Sim(user, f"suite-{key}-{uuid.uuid4().hex[:4]}", cross_sign=(key == "a"), settle=6)
+        except RuntimeError:
+            # most likely MAS's per-address login limit (all test logins share one address): wait it out once
+            print(f"(respondent {key}: login refused, retrying after MAS's rate-limit window)", flush=True)
+            time.sleep(65)
+            SIMS[key] = lib.Sim(user, f"suite-{key}-{uuid.uuid4().hex[:4]}", cross_sign=(key == "a"), settle=6)
     return SIMS[key]
 
 
@@ -72,12 +79,22 @@ def utd_in(s, room):
 
 
 # ------------------------------------------------------------------------------------------ scenarios
+def login(user, password):
+    return http_json(lib.SYNAPSE + "/_matrix/client/v3/login", {
+        "type": "m.login.password", "identifier": {"type": "m.id.user", "user": user},
+        "password": password, "initial_device_display_name": "sbcomposer suite"})
+
+
 def sc_accounts():
     print("== Accounts", flush=True)
-    # The account SwitchBoard created through MAS (its "Matrix users" page) can log in
-    status, body = http_json(lib.SYNAPSE + "/_matrix/client/v3/login", {
-        "type": "m.login.password", "identifier": {"type": "m.id.user", "user": E["SBUSER"]},
-        "password": E["SBUSER_PW"], "initial_device_display_name": "sbcomposer suite"})
+    a = sim("a")
+    check(f"respondent A ({E['RESP_A']}) logs in through MAS with end-to-end encryption", a.device is not None)
+    b = sim("b")
+    check(f"respondent B ({E['RESP_B']}) logs in through MAS", b.device is not None)
+    # MAS limits password logins per address (default: a burst of 3, then 3 per minute); every test login
+    # comes from the same address, so leave the window before the next ones.
+    time.sleep(65)
+    status, body = login(E["SBUSER"], E["SBUSER_PW"])
     ok = check("an account created by SwitchBoard (through MAS) logs in", status == 200 and "access_token" in body, f"{status} {body}")
     if ok:
         token = body["access_token"]
@@ -86,13 +103,9 @@ def sc_accounts():
               who.get("user_id") == f"@{E['SBUSER']}:{E['MATRIX_HOST']}", str(who))
         status, _ = http_json(lib.SYNAPSE + "/_matrix/client/v3/logout", {}, headers={"Authorization": "Bearer " + token})
         check("logout", status == 200, str(status))
-    status, body = http_json(lib.SYNAPSE + "/_matrix/client/v3/login", {
-        "type": "m.login.password", "identifier": {"type": "m.id.user", "user": E["SBUSER"]}, "password": "wrong-password-123"})
-    check("a wrong password is refused", status in (401, 403), str(status))
-    a = sim("a")
-    check(f"respondent A ({E['RESP_A']}) logs in through MAS with end-to-end encryption", a.device is not None)
-    b = sim("b")
-    check(f"respondent B ({E['RESP_B']}) logs in through MAS", b.device is not None)
+    status, body = login(E["SBUSER"], "wrong-password-123")
+    check("a wrong password is refused", status in (401, 403), f"{status} {body}")
+    time.sleep(65)   # the respondents of the next scenarios may log in again
 
 
 def sc_webchat():
@@ -148,7 +161,8 @@ def sc_sms():
     ma, mb = a.mark(), b.mark()
     q = urllib.parse.urlencode({"to": E["DID"], "from": "5145550123", "message": f"Bonjour par texto {nonce}",
                                 "id": str(int(time.time())), "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                "sbchatapikey": E["CC_TOKEN"]})
+                                # the key in SwitchBoard's hook URL: sha256 of the call center's token
+                                "sbchatapikey": hashlib.sha256(E["CC_TOKEN"].encode()).hexdigest()})
     try:
         with urllib.request.urlopen(f"https://{E['SBCHAT_HOST']}/voip_api?{q}", timeout=30) as r:
             status, text = r.status, r.read().decode()
@@ -156,7 +170,7 @@ def sc_sms():
         status, text = e.code, ""
     check("the SMS webhook accepts a message with the call center key", status == 200, f"{status} {text[:100]}")
     try:
-        urllib.request.urlopen(f"https://{E['SBCHAT_HOST']}/voip_api?" + q.replace(E["CC_TOKEN"], "wrongkey"), timeout=30)
+        urllib.request.urlopen(f"https://{E['SBCHAT_HOST']}/voip_api?" + q.replace(hashlib.sha256(E["CC_TOKEN"].encode()).hexdigest(), "wrongkey"), timeout=30)
         bad = 200
     except urllib.error.HTTPError as e:
         bad = e.code

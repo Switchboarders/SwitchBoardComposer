@@ -156,8 +156,10 @@ if ! skip server; then
     [ "${SENT_AFTER:-0}" -gt "${SENT_BEFORE:-0}" ] && pass "the respondent's SMS answer reached the voip.ms queue (muted: not sent)" \
         || fail "no muted SMS in the voip.ms queue ($SENT_BEFORE -> $SENT_AFTER)"
     # Law 25: a closed room is purged from Synapse (the bridge does it through MAS, ROOM_PURGE_DELAY_SECS)
-    TOKEN=$(mas_cli manage issue-compatibility-token "$(conf ADMIN_LOCALPART)" --yes-i-want-to-grant-synapse-admin-privileges 2>/dev/null \
+    # A short-lived Synapse admin token for these checks (mas-cli prints it in its log output), logged out after
+    TOKEN=$(mas_cli manage issue-compatibility-token "$(conf ADMIN_LOCALPART)" --yes-i-want-to-grant-synapse-admin-privileges 2>&1 \
         | grep -o 'mct_[A-Za-z0-9_]*' | head -n1)
+    [ -n "$TOKEN" ] || fail "could not get a Synapse admin token from MAS for the purge check"
     for room in $(sed -n 's/^ROOM \(webchat\|sms\) //p' "$RESULTS/py.log"); do
         gone=0
         for _ in $(seq 1 20); do
@@ -168,6 +170,9 @@ if ! skip server; then
         done
         [ "$gone" = 1 ] && pass "closed room $room purged from Synapse (Law 25)" || fail "room $room still in Synapse after 200 s (HTTP $code)"
     done
+    # logout is MAS's job (compatibility API): the admin token stops working at once
+    [ -z "$TOKEN" ] || printf 'url = "http://mas:8080/_matrix/client/v3/logout"\nrequest = "POST"\nheader = "Authorization: Bearer %s"\ndata = "{}"\n' "$TOKEN" \
+        | web_curl -o /dev/null
 fi
 
 # ------------------------------------------------------------------------------------------ restart

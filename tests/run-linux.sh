@@ -8,7 +8,7 @@
 #                      [--sb-ref REF --sbchat-ref REF]     refs to install/update to (default main)
 #
 # For each distribution: install.sh (fresh, self-signed) -> verify.sh --functional -> install.sh again
-# (update path: backups, nothing regenerated) -> secrets unchanged -> verify.sh --functional.
+# (update path: backups, nothing regenerated) -> secrets unchanged -> verify.sh --functional -> tests/suite.sh.
 # With --from-*: the fresh install uses those refs and the update goes to --sb-ref/--sbchat-ref.
 # Logs: tests/results/<distribution>/. Exit 0 when every check passed.
 set -uo pipefail
@@ -167,6 +167,12 @@ run_distro() {
         pass "verify --functional after update"
     else
         fail "verify --functional after update (see $logs/verify-2.log)"; grep -E '^FAIL' "$logs/verify-2.log"
+    fi
+    # The full functional suite (test accounts, web chat with two respondents, SMS, Law 25 purge, restarts)
+    if msh "cd /opt/sbcomposer && tests/suite.sh --confirm --prefix $PREFIX --skip outside" > "$logs/suite.log" 2>&1; then
+        pass "full suite ($(grep -a -c '^PASS' "$logs/suite.log") checks)"
+    else
+        fail "full suite: $(grep -a -c '^FAIL' "$logs/suite.log") failed (see $logs/suite.log)"; grep -a -E '^FAIL' "$logs/suite.log"
     fi
     msh "git -C $PREFIX/switchboard rev-parse HEAD; git -C $PREFIX/switchboardchat rev-parse HEAD" > "$logs/commits" 2>/dev/null
     [ "$KEEP" = 1 ] || docker rm -f -v "$MACHINE" >/dev/null 2>&1
