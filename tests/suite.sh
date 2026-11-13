@@ -23,11 +23,12 @@ COMPOSER_DIR=$(cd "$(dirname "$0")/.." && pwd)
 . "$COMPOSER_DIR/lib/common.sh"
 COMPOSER_DIR=$(winpath "$COMPOSER_DIR")
 if [ "$IS_WINDOWS" = 1 ]; then PREFIX="${SBC_PREFIX:-$(winpath "$USERPROFILE")/switchboard}"; else PREFIX="${SBC_PREFIX:-/opt/switchboard}"; fi
-OUTSIDE="" SKIP="" CONFIRM=0
+OUTSIDE="" OUTSIDE_PORT=22 SKIP="" CONFIRM=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --prefix) PREFIX=$2; shift 2 ;;
         --outside) OUTSIDE=$2; shift 2 ;;
+        --outside-port) OUTSIDE_PORT=$2; shift 2 ;;   # e.g. a reverse tunnel: ssh -A -R 2222:pi:22 server
         --skip) SKIP=",$2,"; shift 2 ;;
         --confirm) CONFIRM=1; shift ;;
         -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -183,10 +184,11 @@ fi
 # ------------------------------------------------------------------------------------------ outside
 if [ -n "$OUTSIDE" ] && ! skip outside; then
     step "outside network: $OUTSIDE"
-    ssh -o BatchMode=yes "$OUTSIDE" 'mkdir -p /tmp/sbcsuite' \
-        && scp -q "$COMPOSER_DIR/tests/outside.py" "$D/tests/e2e/lib.py" "$OUTSIDE:/tmp/sbcsuite/" \
+    OSSH=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RESULTS/known_hosts")
+    ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" 'mkdir -p /tmp/sbcsuite' \
+        && scp -q "${OSSH[@]}" -P "$OUTSIDE_PORT" "$COMPOSER_DIR/tests/outside.py" "$D/tests/e2e/lib.py" "$OUTSIDE:/tmp/sbcsuite/" \
         || fail "could not copy the checks to $OUTSIDE"
-    remote() { ssh -o BatchMode=yes "$OUTSIDE" "cd /tmp/sbcsuite && MATRIX_HOST=$MATRIX SB_HOST=$SB SBCHAT_HOST=$SBCHAT ORIGIN=$ORIGIN NONCE=${NONCE:-} python3 -I outside.py $*"; }
+    remote() { ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" "cd /tmp/sbcsuite && MATRIX_HOST=$MATRIX SB_HOST=$SB SBCHAT_HOST=$SBCHAT ORIGIN=$ORIGIN NONCE=${NONCE:-} python3 -I outside.py $*"; }
     count < <(remote public 2>&1 | grep -E '^(PASS|FAIL)')
     NONCE=$(rand_hex 4); export NONCE
     suite_py responder > "$RESULTS/responder.log" 2>&1 &
@@ -195,6 +197,6 @@ if [ -n "$OUTSIDE" ] && ! skip outside; then
     count < <(remote visitor 2>&1 | grep -E '^(PASS|FAIL)')
     wait "$RPID"
     count < <(grep -E '^(PASS|FAIL)' "$RESULTS/responder.log")
-    ssh -o BatchMode=yes "$OUTSIDE" 'rm -rf /tmp/sbcsuite'
+    ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" 'rm -rf /tmp/sbcsuite'
 fi
 exit $(( FAILS > 0 ))

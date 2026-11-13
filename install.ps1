@@ -27,5 +27,8 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     exit 3
 }
 $target = (Join-Path $PSScriptRoot $Script) -replace '\\', '/'
+# 'Continue' from here: with 'Stop', Windows PowerShell 5.1 turns the first line bash writes on stderr
+# into a terminating error as soon as the output is redirected (e.g. .\install.ps1 ... > install.log).
+$ErrorActionPreference = 'Continue'
 & $bash $target @rest
 exit $LASTEXITCODE

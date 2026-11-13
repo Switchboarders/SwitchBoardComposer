@@ -49,14 +49,16 @@ ps() {
 # copies its log to $RESULTS/<name>.log; returns its exit code.
 run_on_pc() { # name script args...
     local name=$1 script=$2; shift 2
-    # The detached command goes base64-encoded (-EncodedCommand), so no quoting survives two SSH hops.
-    local cmd enc
-    cmd="\$log = \"\$env:USERPROFILE\\sbctest-$name.log\"; & \"\$env:USERPROFILE\\sbcomposer\\install.ps1\" -Script $script $* *> \$log; Set-Content -Path \"\$log.rc\" -Value \$LASTEXITCODE"
-    enc=$(printf '%s' "$cmd" | iconv -t UTF-16LE | base64 -w0)
+    # The job runs as a scheduled task in the user's logged-on desktop session (/IT): a process of the SSH
+    # session would be killed when it closes, and Docker Desktop's credential helper only works in a real
+    # logon session ("error getting credentials" over SSH, even for public images). bash writes the log
+    # itself: in Windows PowerShell 5.1 a redirected native command's stderr becomes error records.
     ps <<EOF >/dev/null
+\$job = "\$env:USERPROFILE\\sbctest-$name.ps1"
 Remove-Item -ErrorAction SilentlyContinue "\$env:USERPROFILE\\sbctest-$name.log", "\$env:USERPROFILE\\sbctest-$name.log.rc"
-# Through WMI: a process started from the SSH session would be killed when the session closes
-Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $enc' } | Out-Null
+Set-Content -Path \$job -Value "& '\$env:ProgramFiles\\Git\\bin\\bash.exe' -c 'cd ~/sbcomposer && ./$script $* > ~/sbctest-$name.log 2>&1; echo \`\$? > ~/sbctest-$name.log.rc'"
+schtasks /Create /F /TN "sbctest-$name" /SC ONCE /ST 23:59 /IT /TR "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \$job" | Out-Null
+schtasks /Run /TN "sbctest-$name" | Out-Null
 EOF
     local rc=""
     for _ in $(seq 1 240); do   # up to 2 h
@@ -105,6 +107,7 @@ EOF
 fi
 
 # The composer as a fresh clone would give it, in ~/sbcomposer on the PC
+echo "    copying the composer to the PC..."
 ARCHIVE=$(mktemp --suffix=.tar)
 (cd "$ROOT" && git ls-files -co --exclude-standard | grep -v '^tests/results/' | tar -cf "$ARCHIVE" -T -)
 pc_put "$ARCHIVE" sbcomposer.tar; rm -f "$ARCHIVE"
@@ -113,6 +116,7 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\sbcomposer" | Out-Null
 tar -xf "$env:USERPROFILE\sbcomposer.tar" -C "$env:USERPROFILE\sbcomposer"; Remove-Item "$env:USERPROFILE\sbcomposer.tar"
 EOF
 
+echo "    installing (SwitchBoardChat's Rust build takes a while on the PC)..."
 t0=$SECONDS
 if run_on_pc install install.sh --non-interactive --domain sbc.test --tls selfsigned --http-port 18080 --https-port 18443; then
     pass "fresh install ($((SECONDS - t0)) s)"
