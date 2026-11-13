@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly check (vieuxpc, 00:00): does a fresh install + update of the latest SwitchBoard and
+# Nightly check (the test machine, 00:00): does a fresh install + update of the latest SwitchBoard and
 # SwitchBoardChat still work? Runs tests/run-linux.sh in throwaway Docker-in-Docker machines:
 #   1. debian: install at the last commits that passed, then update to main (the real update path);
 #      the first night (nothing passed yet): install main, then re-run (update path) on main;

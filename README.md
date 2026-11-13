@@ -9,8 +9,7 @@ One command installs **or updates** the whole helpline stack on one machine, wir
 | Synapse | `matrix/` (pinned in `versions.env`) | `https://matrix.<domain>` |
 | MAS (Matrix Authentication Service) | `matrix/` (pinned in `versions.env`) | `https://matrix.<domain>/auth/` |
 
-A front nginx (with certbot for Let's Encrypt) owns ports 80/443 and routes the three names, as on the
-production server. The installer also creates the bridge's bot account and a first Matrix admin in MAS, the MAS
+A front nginx (with certbot for Let's Encrypt) owns ports 80/443 and routes the three names. The installer also creates the bridge's bot account and a first Matrix admin in MAS, the MAS
 admin client, SwitchBoard's first admin account, and stores the SBChat admin token and MAS client in
 SwitchBoard (encrypted with its `APP_ENCRYPTION_KEY`), so SwitchBoard can create call centers and Matrix accounts
 right away.
@@ -123,10 +122,20 @@ On failure it sends an email and opens or comments a GitHub issue (label `nightl
 closes the issue. Settings go in `~/.config/sbcomposer/nightly.env` (see `nightly/nightly.env.example`); logs go in
 `~/.local/state/sbcomposer/logs/`.
 
-## Differences from the hand-made production server
+## Design choices
 
-The composer follows the production layout, with a few deliberate changes:
+The layout is the one of a working production server (front nginx + certbot, SwitchBoard in reverse-proxy
+mode, MAS under `/auth/`), with a few deliberate changes:
 - Image versions are pinned instead of `:latest`.
 - Synapse and MAS ports are not published on the host; only nginx's 80/443 and the bridge's 3443 are.
 - `user_directory.search_all_users` is `false`, as SwitchBoardChat's `docs/homeserver.md` recommends.
 - nginx reloads every 6 hours, so renewed certificates are picked up.
+
+## Contributing, security, license
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately, never
+in a public issue: see [SECURITY.md](SECURITY.md).
+
+Copyright (C) 2026 Switchboarders. Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE), like
+SwitchBoard and SwitchBoardChat: free to use, change and share for any noncommercial purpose. WP Chat, which
+the composer can install, is a separate project under GPL-2.0-or-later.

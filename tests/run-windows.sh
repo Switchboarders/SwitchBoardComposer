@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Same cycle as run-linux.sh on a real Windows PC with Docker Desktop and Git for Windows, by SSH
-# (default: vieuxpcwindows reached through arch-desktop, like SwitchBoard's own Windows test):
+# (directly, or through a relay host when the PC is only reachable from there):
 #   install.ps1 (fresh, self-signed, ports 18080/18443) -> verify --functional -> install.ps1 again
 #   (update) -> secrets unchanged -> verify --functional
 #
-#   tests/run-windows.sh [--pc vieuxpcwindows] [--relay arch-desktop|""] [--keep]
+#   tests/run-windows.sh --pc WINDOWS-PC [--relay HOST] [--keep]     (or SBC_WIN_PC / SBC_WIN_RELAY)
+# The PC runs OpenSSH server, Docker Desktop and Git for Windows, and its user is logged in at the desktop
+# (the test runs as a scheduled task in that session).
 # Without --keep, everything the test created on the PC (containers, volumes, folders) is removed first.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
-PC=vieuxpcwindows RELAY=arch-desktop KEEP=0
+PC=${SBC_WIN_PC:-} RELAY=${SBC_WIN_RELAY:-} KEEP=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --pc) PC=$2; shift 2 ;;
@@ -19,6 +21,7 @@ while [ $# -gt 0 ]; do
         *) echo "unknown option: $1"; exit 2 ;;
     esac
 done
+[ -n "$PC" ] || { echo "which Windows PC? --pc NAME (an ssh host), or SBC_WIN_PC"; exit 2; }
 RESULTS="$HERE/results/windows"
 mkdir -p "$RESULTS"
 FAILS=0
