@@ -39,6 +39,39 @@ if ($cfg['action'] === 'wire') {
 	exit(0);
 }
 
+// mas_user: SwitchBoard's "Gérer les utilisateurs du serveur Matrix" path (MAS admin API with the
+// admin's stored client): create the account if missing, then set its password.
+if ($cfg['action'] === 'mas_user') {
+	$info = $db->getSbchatinfobyId($id) ?: [];
+	$client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');
+	$created = $client->get_mas_user_id($cfg['username']) ? 'existed' : ($client->add_mas_user($cfg['username']) ? 'created' : 'failed');
+	$pw = $created !== 'failed' && $client->set_mas_user_password($cfg['username'], $cfg['password']);
+	ob_end_clean();
+	out(['ok' => $created !== 'failed' && $pw, 'account' => $created, 'password_set' => (bool)$pw]);
+	exit(0);
+}
+
+// macro: SwitchBoard's macro editor path (SBChat update_macro, then list_macros) for a call center token
+if ($cfg['action'] === 'macro') {
+	$info = $db->getSbchatinfobyId($id) ?: [];
+	$client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');
+	$existing = null;
+	foreach (($client->list_macros($cfg['token']) ?: []) as $m) {
+		if (($m['macro_name'] ?? '') === $cfg['name']) { $existing = $m; break; }
+	}
+	$client->update_macro($cfg['token'], [
+		'id_macro' => (string)($existing['id_macro'] ?? -1),
+		'macro_name' => $cfg['name'], 'macro_text' => $cfg['text'], 'macro_tags' => $cfg['tags'] ?? '',
+	]);
+	$found = false;
+	foreach (($client->list_macros($cfg['token']) ?: []) as $m) {
+		if (($m['macro_name'] ?? '') === $cfg['name'] && ($m['macro_text'] ?? '') === $cfg['text']) { $found = true; }
+	}
+	ob_end_clean();
+	out(['ok' => $found]);
+	exit(0);
+}
+
 // status: is the wiring there, and does SwitchBoard reach SBChat and MAS with it?
 $info = $db->getSbchatinfobyId($id) ?: [];
 $client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');

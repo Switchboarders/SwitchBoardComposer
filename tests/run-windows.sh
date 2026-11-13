@@ -49,11 +49,14 @@ ps() {
 # copies its log to $RESULTS/<name>.log; returns its exit code.
 run_on_pc() { # name script args...
     local name=$1 script=$2; shift 2
+    # The detached command goes base64-encoded (-EncodedCommand), so no quoting survives two SSH hops.
+    local cmd enc
+    cmd="\$log = \"\$env:USERPROFILE\\sbctest-$name.log\"; & \"\$env:USERPROFILE\\sbcomposer\\install.ps1\" -Script $script $* *> \$log; Set-Content -Path \"\$log.rc\" -Value \$LASTEXITCODE"
+    enc=$(printf '%s' "$cmd" | iconv -t UTF-16LE | base64 -w0)
     ps <<EOF >/dev/null
-\$log = "\$env:USERPROFILE\\sbctest-$name.log"
-Remove-Item -ErrorAction SilentlyContinue \$log, "\$log.rc"
-\$cmd = "& '\$env:USERPROFILE\\sbcomposer\\install.ps1' -Script $script $* > '\$log' 2>&1; Set-Content -Path '\$log.rc' -Value \$LASTEXITCODE"
-Start-Process -WindowStyle Hidden powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',\$cmd
+Remove-Item -ErrorAction SilentlyContinue "\$env:USERPROFILE\\sbctest-$name.log", "\$env:USERPROFILE\\sbctest-$name.log.rc"
+# Through WMI: a process started from the SSH session would be killed when the session closes
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $enc' } | Out-Null
 EOF
     local rc=""
     for _ in $(seq 1 240); do   # up to 2 h
