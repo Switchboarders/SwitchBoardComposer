@@ -311,8 +311,14 @@ def sc_team():
     m = a.mark()
     say(a, ra, "!signer Répondant Test")
     rec = a.wait(lambda e: e["event"] == "message" and "Entente de confidentialité signée" in e.get("body", ""), 120, m)
-    check("!signer gives a receipt with the name and the account", rec is not None and "Répondant Test" in rec["body"] and E["RESP_A"] in rec["body"],
-          (rec or {}).get("body", "")[:300])
+    if rec is None:
+        # what A got in its user room meanwhile (the bridge's own notices only: no conversation content)
+        got = [e for e in a.events[m:] if e.get("room") == ra]
+        detail = "no receipt; events in the user room: " + ", ".join(
+            (e["event"] + (":" + e.get("body", "")[:50].replace("\n", " ") if e["event"] == "message" else "")) for e in got[-6:])
+    else:
+        detail = rec.get("body", "")[:300]
+    check("!signer gives a receipt with the name and the account", rec is not None and "Répondant Test" in rec["body"] and E["RESP_A"] in rec["body"], detail)
     mb_ = b.mark()
     ma_ = a.mark()
     print("SIGNED", flush=True)
