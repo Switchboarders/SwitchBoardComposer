@@ -33,6 +33,14 @@ installation.
 For a LAN or a test machine without public DNS, use `--tls selfsigned`: a local CA is created
 (`/opt/switchboard/matrix/ca/ca.pem`) and trusted by SwitchBoard and the bridge.
 
+**Behind an existing reverse proxy** (e.g. Nginx Proxy Manager owning 80/443): `--behind-proxy`. Nothing is
+published on 80/443. Create one proxy host in the proxy with the three names, forwarding to `http` /
+`synapse-nginx` / `8080` on the Docker network `web`, with websockets, a Let's Encrypt certificate and Force SSL.
+`tools/npm-proxy-host.py` does this through Nginx Proxy Manager's API.
+
+**Windows** (Docker Desktop + Git for Windows): `install.cmd` / `.\install.ps1`, same options. The default
+folder is `%USERPROFILE%\switchboard`, and databases live in Docker volumes.
+
 `./install.sh --help` lists every option (other host names, ports, branches, web chat origins…).
 
 ## Update
@@ -67,10 +75,29 @@ and SwitchBoard calling the SBChat API and the MAS admin API with the stored cre
 visitor writes; a respondent logged in through MAS, using real end-to-end encryption, reads the message and
 answers; the visitor receives the answer.
 
+## Full test suite
+
+```sh
+tests/suite.sh --confirm [--outside HOST]   # test installations only: creates test accounts and a call center
+```
+
+The suite covers:
+- **health:** everything `verify.sh` checks.
+- **accounts:** created through MAS and through SwitchBoard; a wrong password is refused.
+- **web chat:** two respondents, the welcome macro, `!aide`, `#macro`, answers from both, the history, and the
+  end of the chat for everyone.
+- **SMS:** the voip.ms webhook with key, the hidden caller number, the muted answer in the voip.ms queue, and
+  `!oubli`.
+- **Law 25:** an ended web chat is purged from Synapse.
+- **restarts:** a new chat works after every service restarts.
+- **outside network (`--outside HOST`):** DNS, certificates, redirects, discovery, federation, what must NOT be
+  exposed, CORS, and a web chat from there answered by a respondent on the server.
+
 ## Tests
 
 ```sh
 tests/run-linux.sh --distros "debian ubuntu fedora arch alpine"
+tests/run-windows.sh [--pc NAME] [--relay HOST]
 ```
 
 Each distribution gets a throwaway Docker-in-Docker machine (same approach as SwitchBoard's install tests). The
