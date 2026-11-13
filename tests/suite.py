@@ -190,8 +190,13 @@ def sc_sms():
         check("respondent's SMS answer is accepted by the bridge", bool(sent and sent.get("ok")), str(sent))
         time.sleep(5)
         print(f"SMS_NONCE {nonce}", flush=True)
+        m = a.mark()
         a.send(room, "!fin")
-        check("!fin closes the SMS room", a.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 60, m) is not None)
+        check("!fin in an SMS room explains it is for web chats (use !stop / !oubli)",
+              a.wait_message("seulement à un clavardage web", m, 30) is not None or a.wait_message("only applies to a web chat", m, 30) is not None)
+        a.send(room, "!oubli")
+        check("!oubli (right to erasure) erases the caller and closes the SMS room",
+              a.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 90, m) is not None)
 
 
 def sc_responder():
