@@ -160,7 +160,8 @@ if ! skip server; then
     TOKEN=$(mas_cli manage issue-compatibility-token "$(conf ADMIN_LOCALPART)" --yes-i-want-to-grant-synapse-admin-privileges 2>&1 \
         | grep -o 'mct_[A-Za-z0-9_]*' | head -n1)
     [ -n "$TOKEN" ] || fail "could not get a Synapse admin token from MAS for the purge check"
-    for room in $(sed -n 's/^ROOM \(webchat\|sms\) //p' "$RESULTS/py.log"); do
+    # only web chats are purged by the bridge when they end (SMS rooms follow the retention settings)
+    for room in $(sed -n "s/^ROOM webchat //p" "$RESULTS/py.log"); do
         gone=0
         for _ in $(seq 1 20); do
             code=$(printf 'url = "http://localhost:8008/_synapse/admin/v1/rooms/%s"\nheader = "Authorization: Bearer %s"\n' "$room" "$TOKEN" \
