@@ -11,7 +11,8 @@ set -uo pipefail
 umask 077
 COMPOSER_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$COMPOSER_DIR/lib/common.sh"
-PREFIX="${SBC_PREFIX:-/opt/switchboard}"
+COMPOSER_DIR=$(winpath "$COMPOSER_DIR")
+if [ "$IS_WINDOWS" = 1 ]; then PREFIX="${SBC_PREFIX:-$(winpath "$USERPROFILE")/switchboard}"; else PREFIX="${SBC_PREFIX:-/opt/switchboard}"; fi
 FUNCTIONAL=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -21,6 +22,7 @@ while [ $# -gt 0 ]; do
         *) die "$EXIT_ARGS" "unknown option: $1" ;;
     esac
 done
+PREFIX=$(winpath "$PREFIX")
 CONF="$PREFIX/composer.env"
 [ -f "$CONF" ] || die "$EXIT_ARGS" "no installation in $PREFIX ($CONF missing)"
 . "$COMPOSER_DIR/lib/matrix.sh"

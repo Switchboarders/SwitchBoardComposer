@@ -6,7 +6,8 @@ set -uo pipefail
 umask 077
 COMPOSER_DIR=$(cd "$(dirname "$0")/.." && pwd)
 . "$COMPOSER_DIR/lib/common.sh"
-PREFIX="${SBC_PREFIX:-/opt/switchboard}"
+COMPOSER_DIR=$(winpath "$COMPOSER_DIR")
+if [ "$IS_WINDOWS" = 1 ]; then PREFIX="${SBC_PREFIX:-$(winpath "$USERPROFILE")/switchboard}"; else PREFIX="${SBC_PREFIX:-/opt/switchboard}"; fi
 [ "${1:-}" = --prefix ] && PREFIX=$2
 CONF="$PREFIX/composer.env"
 . "$COMPOSER_DIR/lib/matrix.sh"
@@ -69,8 +70,8 @@ OUT=$(sbchat_api "{\"command\":\"change_respondents\",\"api_token\":\"$CC_TOKEN\
 case "$OUT" in *'"querystatus":"Success'*) pass "respondent @$RESP:$MATRIX assigned" ;; *) fail "change_respondents: ${OUT:0:200}" ;; esac
 
 # The web chat goes to one call center (WEB_CALL_CENTER_ID): find the test one's id in the bridge's DB
-CC_ID=$(docker run --rm -v "$D/sb-chat/db:/db:ro" --entrypoint python3 "$(conf SYNAPSE_IMAGE)" -c \
-    "import sqlite3; print(sqlite3.connect('file:/db/users.db?mode=ro', uri=True).execute('SELECT id_call_center FROM call_center WHERE call_center_did=$DID ORDER BY id_call_center DESC').fetchone()[0])" 2>/dev/null)
+CC_ID=$(docker run --rm --volumes-from sb-chat:ro --entrypoint python3 "$(conf SYNAPSE_IMAGE)" -c \
+    "import sqlite3; print(sqlite3.connect('file:/app/data/db/users.db?mode=ro', uri=True).execute('SELECT id_call_center FROM call_center WHERE call_center_did=$DID ORDER BY id_call_center DESC').fetchone()[0])" 2>/dev/null)
 [[ "$CC_ID" =~ ^[0-9]+$ ]] || { fail "could not find the test call center's id"; exit 1; }
 cp -p "$ENVF" "$ENVF.sbcomposer-test"
 env_set "$ENVF" WEB_ALLOWED_ORIGINS "$ORIGIN"

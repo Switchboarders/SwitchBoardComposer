@@ -32,16 +32,21 @@ SB_HOST=$(conf SB_HOST)
 SBCHAT_HOST=$(conf SBCHAT_HOST)
 HTTP_PORT=$(conf HTTP_PORT)
 HTTPS_PORT=$(conf HTTPS_PORT)
+BIND_ADDR=$( [ "$(conf FRONT)" = proxy ] && echo 127.0.0.1 || echo 0.0.0.0 )
 COMPOSE_PROFILES=$( [ "$(conf TLS_MODE)" = letsencrypt ] && echo letsencrypt )
+$( [ "$IS_WINDOWS" = 1 ] && printf 'SYNAPSE_DATA=synapse-data\nPOSTGRES_DATA=postgres-data\n' )
 EOF
     )
 }
 
 # ------------------------------------------------------------------------------------------ Synapse
+# Where Synapse's /data lives: a folder on Linux, a Docker volume on Windows (see docker-compose.yml)
+synapse_src() { if [ "$IS_WINDOWS" = 1 ]; then echo sbmatrix-synapse; else echo "$(MATRIX_DIR)/synapse"; fi; }
+
 synapse_render() {
     local d host image
-    d=$(MATRIX_DIR)/synapse; host=$(conf MATRIX_HOST); image=$(conf SYNAPSE_IMAGE)
-    if [ ! -f "$d/$host.signing.key" ]; then
+    d=$(synapse_src); host=$(conf MATRIX_HOST); image=$(conf SYNAPSE_IMAGE)
+    if ! docker run --rm -v "$d:/data" --entrypoint test "$image" -f "/data/$host.signing.key"; then
         say "Generating Synapse's signing key and log configuration"
         docker run --rm -v "$d:/data" -e SYNAPSE_SERVER_NAME="$host" -e SYNAPSE_REPORT_STATS=no \
             "$image" generate >/dev/null

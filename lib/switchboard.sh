@@ -9,6 +9,13 @@ SB_SRC=/var/www/html/SwitchBoard/SwitchBoard/src
 # through the front nginx (network aliases), so it works the same with Let's Encrypt or self-signed.
 web_sh() { docker run --rm -i --network web --entrypoint sh "$(conf CURL_IMAGE)" -s; }
 
+# Exports the SB_SMTP_* settings kept in composer.env (e.g. OAuth2 mail: provider, client id, tenant,
+# mailbox) for SwitchBoard's up.sh/up.ps1, which copy them into its .env
+sb_smtp_env() {
+    local line
+    while IFS= read -r line; do export "${line?}"; done < <(grep -E '^SB_SMTP_[A-Z_]+=.' "$CONF" || true)
+}
+
 switchboard_up() {
     step "SwitchBoard ($(git -C "$(SB_DIR)" rev-parse --short HEAD))"
     local d; d="$(SB_DIR)/Docker"
@@ -18,8 +25,17 @@ switchboard_up() {
         chmod 644 "$d/certs/sbcomposer-ca.pem"
         [ -f "$d/.env" ] && env_set "$d/.env" SB_SBCHAT_CA_BUNDLE /etc/ssl/sbchat/sbcomposer-ca.pem
     fi
-    (cd "$d" && SB_TZ="$(conf TZ)" ./up.sh --non-interactive --mode=reverse-proxy --host="$(conf SB_HOST)" \
-        --email="$(conf EMAIL)" --tz="$(conf TZ)") >&2 || die "$EXIT_START" "SwitchBoard's up.sh failed"
+    if [ "$IS_WINDOWS" = 1 ]; then
+        # Windows: SwitchBoard's own up.ps1 (adds docker-compose.windows.yml: database and code in volumes)
+        sb_smtp_env
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$d/up.ps1")" -NonInteractive \
+            -Mode reverse-proxy -HostName "$(conf SB_HOST)" -Email "$(conf EMAIL)" -TimeZone "$(conf TZ)" -NoFirewall \
+            </dev/null >&2 || die "$EXIT_START" "SwitchBoard's up.ps1 failed"
+    else
+        # SB_SMTP_* from composer.env (mail account): up.sh copies them into SwitchBoard's .env
+        (cd "$d" && sb_smtp_env && ./up.sh --non-interactive --mode=reverse-proxy --host="$(conf SB_HOST)" \
+            --email="$(conf EMAIL)" --tz="$(conf TZ)") >&2 || die "$EXIT_START" "SwitchBoard's up.sh failed"
+    fi
     if [ "$(conf TLS_MODE)" = selfsigned ] && [ -f "$(MATRIX_DIR)/ca/ca.pem" ] \
        && [ "$(env_get "$d/.env" SB_SBCHAT_CA_BUNDLE)" != /etc/ssl/sbchat/sbcomposer-ca.pem ]; then
         # First install: .env did not exist before up.sh; set the CA and recreate php once

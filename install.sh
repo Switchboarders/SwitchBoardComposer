@@ -16,12 +16,14 @@ umask 077
 COMPOSER_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib/common.sh
 . "$COMPOSER_DIR/lib/common.sh"
+COMPOSER_DIR=$(winpath "$COMPOSER_DIR")
 
-PREFIX="${SBC_PREFIX:-/opt/switchboard}"
+if [ "$IS_WINDOWS" = 1 ]; then DEFAULT_PREFIX="$(winpath "$USERPROFILE")/switchboard"; else DEFAULT_PREFIX=/opt/switchboard; fi
+PREFIX="${SBC_PREFIX:-$DEFAULT_PREFIX}"
 OPT_DOMAIN="${SBC_DOMAIN:-}" OPT_MATRIX_HOST="" OPT_SB_HOST="" OPT_SBCHAT_HOST=""
 OPT_EMAIL="${SBC_EMAIL:-}" OPT_TZ="${SBC_TZ:-}" OPT_TLS="${SBC_TLS:-}"
 OPT_SB_REF="" OPT_SBCHAT_REF="" OPT_SB_REPO="" OPT_SBCHAT_REPO=""
-OPT_WEB_ORIGINS="" OPT_WEB_CALL_CENTER="" OPT_HTTP_PORT="" OPT_HTTPS_PORT=""
+OPT_WEB_ORIGINS="" OPT_WEB_CALL_CENTER="" OPT_HTTP_PORT="" OPT_HTTPS_PORT="" OPT_FRONT=""
 INTERACTIVE=1 SKIP_VERIFY=0 NO_BACKUP=0
 
 usage() {
@@ -29,12 +31,17 @@ usage() {
     cat <<'EOF'
 
 Options (first install; later runs reuse the saved answers unless given again):
-  --prefix DIR             where everything is installed (default /opt/switchboard)     [SBC_PREFIX]
+  --prefix DIR             where everything is installed (default /opt/switchboard;
+                           Windows: %USERPROFILE%\switchboard)                           [SBC_PREFIX]
   --domain NAME            base domain of the three host names                          [SBC_DOMAIN]
   --matrix-host NAME | --sb-host NAME | --sbchat-host NAME   override one host name
   --email ADDRESS          Let's Encrypt and SwitchBoard contact address                [SBC_EMAIL]
   --tz ZONE                time zone, e.g. America/Toronto (default: this machine's)     [SBC_TZ]
   --tls letsencrypt|selfsigned   certificates (default letsencrypt)                     [SBC_TLS]
+  --behind-proxy           another reverse proxy (e.g. Nginx Proxy Manager) owns 80/443 and the
+                           public certificates: it forwards the three names to
+                           http://synapse-nginx:8080 on the Docker network "web". Implies
+                           --tls selfsigned for the internal traffic; nothing is published on 80/443.
   --http-port N / --https-port N  host ports of the front proxy (default 80 / 443)
   --sb-ref REF / --sbchat-ref REF  branch or tag to follow (default main)
   --sb-repo URL / --sbchat-repo URL  git repositories (default: Switchboarders on GitHub)
@@ -57,6 +64,7 @@ while [ $# -gt 0 ]; do
         --email) OPT_EMAIL=${2-}; shift 2 ;;
         --tz) OPT_TZ=${2-}; shift 2 ;;
         --tls) OPT_TLS=${2-}; shift 2 ;;
+        --behind-proxy) OPT_FRONT=proxy; shift ;;
         --http-port) OPT_HTTP_PORT=${2-}; shift 2 ;;
         --https-port) OPT_HTTPS_PORT=${2-}; shift 2 ;;
         --sb-ref) OPT_SB_REF=${2-}; shift 2 ;;
@@ -84,7 +92,7 @@ need git; need openssl; need curl; need awk; need sed; need gzip
 check_docker
 mkdir -p "$PREFIX" 2>/dev/null || die "$EXIT_ARGS" "cannot create $PREFIX (use --prefix, or create it and give it to $(id -un))"
 [ -w "$PREFIX" ] || die "$EXIT_ARGS" "$PREFIX is not writable by $(id -un)"
-PREFIX=$(cd "$PREFIX" && pwd)
+PREFIX=$(winpath "$(cd "$PREFIX" && pwd)")
 CONF="$PREFIX/composer.env"
 UPDATE=0
 [ -f "$CONF" ] && UPDATE=1
@@ -110,6 +118,16 @@ for pair in MATRIX_HOST:"$OPT_MATRIX_HOST" SB_HOST:"$OPT_SB_HOST" SBCHAT_HOST:"$
     env_set "$CONF" "$key" "$val"
 done
 
+[ -n "$OPT_FRONT" ] || OPT_FRONT=$(conf FRONT)
+[ -n "$OPT_FRONT" ] || OPT_FRONT=direct
+env_set "$CONF" FRONT "$OPT_FRONT"
+if [ "$OPT_FRONT" = proxy ]; then
+    # Public TLS is the upstream proxy's job; our own certificates only serve container-to-container traffic
+    OPT_TLS=selfsigned
+    : "${OPT_HTTP_PORT:=$(conf HTTP_PORT)}" "${OPT_HTTPS_PORT:=$(conf HTTPS_PORT)}"
+    [ -n "$OPT_HTTP_PORT" ] && [ "$OPT_HTTP_PORT" != 80 ] || OPT_HTTP_PORT=18480
+    [ -n "$OPT_HTTPS_PORT" ] && [ "$OPT_HTTPS_PORT" != 443 ] || OPT_HTTPS_PORT=18443
+fi
 [ -n "$OPT_TLS" ] || OPT_TLS=$(conf TLS_MODE)
 [ -n "$OPT_TLS" ] || OPT_TLS=letsencrypt
 case "$OPT_TLS" in letsencrypt|selfsigned) ;; *) die "$EXIT_ARGS" "--tls must be letsencrypt or selfsigned" ;; esac
@@ -172,7 +190,7 @@ if [ "$UPDATE" = 1 ] && [ "$NO_BACKUP" = 0 ]; then
     if container_running masdb; then
         docker exec masdb pg_dump -U mas -d mas | gzip > "$BACKUP/mas-db.sql.gz" || die "$EXIT_START" "MAS database backup failed"
     fi
-    if [ -d "$(MATRIX_DIR)/synapse" ] && container_running synapse; then
+    if container_running synapse; then
         # sqlite online backup, from inside the container (the files belong to Synapse's uid)
         docker exec synapse python -c "import sqlite3; s=sqlite3.connect('/data/homeserver.db'); d=sqlite3.connect('/data/backup.db'); s.backup(d); d.close()" \
             && docker cp synapse:/data/backup.db - | gzip > "$BACKUP/synapse-db.tar.gz" \
@@ -187,7 +205,7 @@ fetch_repo() { # dir url ref (branch, tag or commit)
     local dir=$1 url=$2 ref=$3
     if [ ! -d "$dir/.git" ]; then
         # public source code: normal permissions (containers read parts of it as non-root users)
-        ( umask 022; git clone -q "$url" "$dir" ) || die "$EXIT_START" "git clone $url failed"
+        ( umask 022; git clone -q -c core.autocrlf=false -c core.eol=lf "$url" "$dir" ) || die "$EXIT_START" "git clone $url failed"
     elif [ -n "$(git -C "$dir" status --porcelain --untracked-files=no)" ]; then
         die "$EXIT_START" "$dir has local modifications: commit or discard them (git -C $dir status), then re-run"
     fi

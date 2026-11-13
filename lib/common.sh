@@ -4,6 +4,16 @@
 # shellcheck disable=SC2034
 readonly EXIT_OK=0 EXIT_ARGS=2 EXIT_DEPS=3 EXIT_START=4 EXIT_CHECK=5
 
+# Windows (Git Bash, called by install.ps1): Docker Desktop's Linux engine does the work. Git Bash must
+# not rewrite paths given to docker.exe/git.exe, and every path we build is a "C:/..." (mixed) path,
+# which bash, git and docker all understand.
+IS_WINDOWS=0
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; esac
+if [ "$IS_WINDOWS" = 1 ]; then
+    export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+fi
+winpath() { if [ "$IS_WINDOWS" = 1 ]; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+
 say()  { printf '%s\n' "$*" >&2; }
 step() { printf '\n==> %s\n' "$*" >&2; }
 die()  { local code=$1; shift; printf 'sbcomposer: %s\n' "$*" >&2; exit "$code"; }
