@@ -14,6 +14,8 @@
 #             answers from both, history, end closes the room for everyone
 #   sms       voip.ms webhook (key checked) -> room, both read it, number hidden, answer queued (muted), !fin
 #   server    the muted SMS answer reached the voip.ms queue; Law 25: closed rooms purged from Synapse
+#   mail      SwitchBoard sends a test mail (its OAuth/SMTP account works); MAS's path through the relay
+#             (to the sender itself, or MAIL_TEST_TO in composer.env); skipped if no mail account
 #   restart   every service restarted -> a new web chat still works end to end
 #   outside   from HOST on another network ("local": from this machine through the public names): DNS, certificates, redirects, discovery, federation, what must
 #             NOT be exposed, CORS; then a web chat from there answered by a respondent here
@@ -225,6 +227,35 @@ if ! skip server; then
     # logout is MAS's job (compatibility API): the admin token stops working at once
     [ -z "$TOKEN" ] || printf 'url = "http://mas:8080/_matrix/client/v3/logout"\nrequest = "POST"\nheader = "Authorization: Bearer %s"\ndata = "{}"\n' "$TOKEN" \
         | web_curl -o /dev/null
+fi
+
+# ------------------------------------------------------------------------------------------ mail
+if ! skip mail; then
+    step "mail (SwitchBoard's account; MAS through SwitchBoard's relay)"
+    FROM=$(docker exec sb_mail_relay awk '$1=="from"{print $2}' /etc/msmtprc 2>/dev/null || true)
+    if [ -z "$FROM" ]; then
+        say "(no mail account configured in SwitchBoard: mail not tested)"
+    else
+        TO=$(conf MAIL_TEST_TO); TO=${TO:-$FROM}
+        STAMP=$(date '+%Y-%m-%d %H:%M')
+        # 1. SwitchBoard itself (same msmtp call as its "Courriel de test" page): OAuth token or password works
+        if printf 'Subject: [sbcomposer test] SwitchBoard %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nCourriel de test automatique (tests/suite.sh) : SwitchBoard -> %s.\r\n' "$STAMP" "$TO" \
+            | docker exec -i -u www-data sb_php-fpm msmtp -a default "$TO" 2> "$RESULTS/mail-sb.err"; then
+            pass "SwitchBoard sends mail ($FROM -> $TO, accepted by the provider)"
+        else
+            fail "SwitchBoard could not send mail: $(tail -n 2 "$RESULTS/mail-sb.err" | tr '\n' ' ')"
+        fi
+        # 2. What MAS does: plain SMTP to sb_mail_relay:2525 on the "web" network (password recovery mails)
+        BODY=$(printf 'From: "Authentication Service" <%s>\r\nTo: %s\r\nSubject: [sbcomposer test] MAS relay %s\r\n\r\nCourriel de test automatique (tests/suite.sh) : MAS -> sb_mail_relay -> %s.\r\n' "$FROM" "$TO" "$STAMP" "$TO")
+        if printf '%s' "$BODY" | docker run --rm -i --network web "$(conf CURL_IMAGE)" -sS --max-time 60 \
+            --url smtp://sb_mail_relay:2525 --mail-from "$FROM" --mail-rcpt "$TO" --upload-file - 2> "$RESULTS/mail-relay.err"; then
+            pass "SwitchBoard's mail relay accepts and sends MAS's mail (password recovery)"
+        else
+            fail "the mail relay refused MAS's mail: $(tail -n 2 "$RESULTS/mail-relay.err" | tr '\n' ' ')"
+        fi
+        grep -q 'transport: smtp' "$(MATRIX_DIR)/mas/config.yaml" && grep -q 'hostname: sb_mail_relay' "$(MATRIX_DIR)/mas/config.yaml" \
+            && pass "MAS is configured to send through sb_mail_relay" || fail "MAS is not configured to use sb_mail_relay"
+    fi
 fi
 
 # ------------------------------------------------------------------------------------------ restart
