@@ -148,7 +148,9 @@ done
 CC_ID=$(sqlite_bridge "SELECT id_call_center FROM call_center WHERE call_center_did=$DID ORDER BY id_call_center DESC LIMIT 1" 2>/dev/null)
 [[ "$CC_ID" =~ ^[0-9]+$ ]] || { fail "test call center id not found"; exit 1; }
 cp -p "$ENVF" "$ENVF.sbcomposer-suite"
-env_set "$ENVF" WEB_ALLOWED_ORIGINS "$ORIGIN"
+# the test website is added to the real ones (a real site keeps working during the test)
+CUR_ORIGINS=$(env_get "$ENVF" WEB_ALLOWED_ORIGINS)
+env_set "$ENVF" WEB_ALLOWED_ORIGINS "${CUR_ORIGINS:+$CUR_ORIGINS,}$ORIGIN"
 env_set "$ENVF" WEB_CALL_CENTER_ID "$CC_ID"
 env_set "$ENVF" WEB_CHALLENGE off
 env_set "$ENVF" MUTE_VOIPMS_REQUEST true

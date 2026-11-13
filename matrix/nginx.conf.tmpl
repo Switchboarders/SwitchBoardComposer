@@ -7,7 +7,7 @@ resolver 127.0.0.11 valid=10s ipv6=off;
 
 server {
     listen 80;
-    server_name @MATRIX_HOST@ @SB_HOST@ @SBCHAT_HOST@;
+    server_name @MATRIX_HOST@ @SB_HOST@ @SBCHAT_HOST@ @WP_HOST@;
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -161,3 +161,26 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 }
+
+# @WP_BEGIN@ (install.sh --wordpress-host: a WordPress site with the WP Chat widget)
+server {
+    listen 443 ssl;
+    listen 8080;
+    server_name @WP_HOST@;
+    ssl_certificate /etc/letsencrypt/live/@CERT@/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/@CERT@/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    client_max_body_size 64M;
+
+    location / {
+        set $wordpress sbwp:80;
+        proxy_pass http://$wordpress;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+}
+# @WP_END@

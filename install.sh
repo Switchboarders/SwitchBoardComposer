@@ -24,6 +24,7 @@ OPT_DOMAIN="${SBC_DOMAIN:-}" OPT_MATRIX_HOST="" OPT_SB_HOST="" OPT_SBCHAT_HOST="
 OPT_EMAIL="${SBC_EMAIL:-}" OPT_TZ="${SBC_TZ:-}" OPT_TLS="${SBC_TLS:-}"
 OPT_SB_REF="" OPT_SBCHAT_REF="" OPT_SB_REPO="" OPT_SBCHAT_REPO=""
 OPT_WEB_ORIGINS="" OPT_WEB_CALL_CENTER="" OPT_HTTP_PORT="" OPT_HTTPS_PORT="" OPT_FRONT=""
+OPT_WP_HOST="" OPT_WP_TITLE="" OPT_WP_PRIVACY=""
 INTERACTIVE=1 SKIP_VERIFY=0 NO_BACKUP=0
 
 usage() {
@@ -47,6 +48,10 @@ Options (first install; later runs reuse the saved answers unless given again):
   --sb-repo URL / --sbchat-repo URL  git repositories (default: Switchboarders on GitHub)
   --web-origins LIST       websites allowed to embed the web chat (comma-separated)
   --web-call-center ID     call center that receives web chats
+  --wordpress-host NAME    also install a WordPress site with the WP Chat widget, connected to this chat
+                           (https://github.com/Switchboarders/wp_chat); its address is allowed for web chats
+  --wordpress-title TEXT   that site's title (default "Clavardage")
+  --privacy-contact TEXT   privacy officer shown by the widget (default: the --email address)
   --no-backup              update without the backup step (tests only)
   --no-verify              skip the final verification
   --non-interactive        never prompt (default when stdin is not a terminal)
@@ -73,6 +78,9 @@ while [ $# -gt 0 ]; do
         --sbchat-repo) OPT_SBCHAT_REPO=${2-}; shift 2 ;;
         --web-origins) OPT_WEB_ORIGINS=${2-}; shift 2 ;;
         --web-call-center) OPT_WEB_CALL_CENTER=${2-}; shift 2 ;;
+        --wordpress-host) OPT_WP_HOST=$(printf '%s' "${2-}" | tr 'A-Z' 'a-z'); shift 2 ;;
+        --wordpress-title) OPT_WP_TITLE=${2-}; shift 2 ;;
+        --privacy-contact) OPT_WP_PRIVACY=${2-}; shift 2 ;;
         --no-backup) NO_BACKUP=1; shift ;;
         --no-verify) SKIP_VERIFY=1; shift ;;
         --non-interactive) INTERACTIVE=0; shift ;;
@@ -85,6 +93,7 @@ done
 . "$COMPOSER_DIR/lib/matrix.sh"
 . "$COMPOSER_DIR/lib/switchboard.sh"
 . "$COMPOSER_DIR/lib/sbchat.sh"
+. "$COMPOSER_DIR/lib/wordpress.sh"
 
 # ---------------------------------------------------------------------------------------- preflight
 step "Checking this machine"
@@ -165,6 +174,26 @@ set_or_default SBCHAT_REF "$OPT_SBCHAT_REF" main
 [ -z "$OPT_WEB_ORIGINS" ] || { safe_value --web-origins "$OPT_WEB_ORIGINS"; env_set "$CONF" WEB_ORIGINS "$OPT_WEB_ORIGINS"; }
 [ -z "$OPT_WEB_CALL_CENTER" ] || { [[ "$OPT_WEB_CALL_CENTER" =~ ^[0-9]+$ ]] || die "$EXIT_ARGS" "--web-call-center must be a number"
                                    env_set "$CONF" WEB_CALL_CENTER_ID "$OPT_WEB_CALL_CENTER"; }
+
+# Optional WordPress site with WP Chat
+if [ -n "$OPT_WP_HOST" ]; then
+    host_ok "$OPT_WP_HOST" || die "$EXIT_ARGS" "--wordpress-host: « $OPT_WP_HOST » is not a valid host name"
+    env_set "$CONF" WP_HOST "$OPT_WP_HOST"
+fi
+if [ -n "$(conf WP_HOST)" ]; then
+    set_or_default WP_TITLE "$OPT_WP_TITLE" "Clavardage"
+    set_or_default WP_PRIVACY_OFFICER "$OPT_WP_PRIVACY" "$(conf EMAIL)"
+    env_default "$CONF" WPCHAT_REPO https://github.com/Switchboarders/wp_chat.git
+    env_default "$CONF" WPCHAT_REF main
+    env_default "$CONF" WP_ADMIN_PASSWORD "$(rand_password)"
+    env_default "$CONF" WP_DB_PASSWORD "$(rand_hex 20)"
+    env_default "$CONF" WP_DB_ROOT_PASSWORD "$(rand_hex 20)"
+    # the site may open web chats: its address joins the allowed origins
+    case ",$(conf WEB_ORIGINS)," in
+        *",https://$(conf WP_HOST),"*) ;;
+        *) env_set "$CONF" WEB_ORIGINS "$(conf WEB_ORIGINS | sed 's/[^,]$/&,/')https://$(conf WP_HOST)" ;;
+    esac
+fi
 
 # Generated once, never rotated by a re-run (changing them would lock out accounts or break sessions)
 env_default "$CONF" BOT_LOCALPART sms
@@ -269,6 +298,7 @@ sbchat_up
 switchboard_first_admin
 switchboard_wire
 switchboard_mail_oauth
+wordpress_up
 
 # ---------------------------------------------------------------------------------------- summary
 CREDS="$PREFIX/credentials.txt"
@@ -280,6 +310,7 @@ Matrix (Element) https://$(conf MATRIX_HOST)
                  (MAS admin; change the password at https://$(conf MATRIX_HOST)/auth/account/)
 Bridge bot       @$(conf BOT_LOCALPART):$(conf MATRIX_HOST)  (password in composer.env, do not log in with it)
 voip.ms SMS URL  https://$(conf SBCHAT_HOST)/voip_api  (SwitchBoard shows the full URL per call center)
+$( [ -n "$(conf WP_HOST)" ] && printf 'WordPress        https://%s/wp-admin   user admin   password %s\n' "$(conf WP_HOST)" "$(conf WP_ADMIN_PASSWORD)" )
 EOF
 )
 

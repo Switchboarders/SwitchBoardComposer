@@ -74,7 +74,7 @@ services:
       web:
         # Containers on "web" (the bridge, SwitchBoard) reach the public names through this proxy,
         # without leaving the machine (no hairpin NAT needed, and works with self-signed certificates).
-        aliases: ["${MATRIX_HOST}", "${SB_HOST}", "${SBCHAT_HOST}"]
+        aliases: ["${MATRIX_HOST}", "${SB_HOST}", "${SBCHAT_HOST}", "${WP_HOST:-wordpress.invalid}"]
 
   certbot:
     image: ${CERTBOT_IMAGE}

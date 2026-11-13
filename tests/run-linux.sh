@@ -140,7 +140,7 @@ run_distro() {
 
     # --- fresh install
     local t0=$SECONDS
-    if msh "cd /opt/sbcomposer && ./install.sh --non-interactive --domain $DOMAIN --tls selfsigned --prefix $PREFIX $from_args" \
+    if msh "cd /opt/sbcomposer && ./install.sh --non-interactive --domain $DOMAIN --tls selfsigned --prefix $PREFIX --wordpress-host wp.$DOMAIN $from_args" \
         > "$logs/install.log" 2>&1; then
         pass "fresh install ($((SECONDS - t0)) s)"
     else

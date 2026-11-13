@@ -1,0 +1,45 @@
+# Optional WordPress site with the WP Chat widget (install.sh --wordpress-host). Served by the front
+# nginx (synapse-nginx) on the "web" network; its database stays on a private network (no name clash
+# with other stacks' databases on "web"). Copied to $PREFIX/wordpress by install.sh with its .env.
+name: sbwp
+services:
+  wordpress:
+    image: ${WORDPRESS_IMAGE}
+    container_name: sbwp
+    restart: unless-stopped
+    environment:
+      WORDPRESS_DB_HOST: sbwp-db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD}
+      WORDPRESS_DB_NAME: wordpress
+      # TLS ends at the front proxy: tell WordPress the visitor uses https
+      WORDPRESS_CONFIG_EXTRA: |
+        if (isset($$_SERVER["HTTP_X_FORWARDED_PROTO"]) && $$_SERVER["HTTP_X_FORWARDED_PROTO"] === "https") { $$_SERVER["HTTPS"] = "on"; }
+        define("FORCE_SSL_ADMIN", true);
+    volumes:
+      - ${WP_FILES:-./html}:/var/www/html
+    depends_on: [db]
+    networks: [internal, web]
+  db:
+    image: ${WP_DB_IMAGE}
+    container_name: sbwp-db
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: ${WP_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${WP_DB_ROOT_PASSWORD}
+    volumes:
+      - ${WP_DB_DATA:-./db}:/var/lib/mysql
+    networks: [internal]
+volumes:
+  # Windows only (WP_FILES=wp-files, WP_DB_DATA=wp-db in .env)
+  wp-files:
+    name: sbwp-files
+  wp-db:
+    name: sbwp-db
+networks:
+  internal: {}
+  web:
+    name: web
+    external: true

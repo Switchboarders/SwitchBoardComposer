@@ -30,6 +30,7 @@ MAS_DB_PASSWORD=$(conf MAS_DB_PASSWORD)
 MATRIX_HOST=$(conf MATRIX_HOST)
 SB_HOST=$(conf SB_HOST)
 SBCHAT_HOST=$(conf SBCHAT_HOST)
+WP_HOST=$(conf WP_HOST)
 HTTP_PORT=$(conf HTTP_PORT)
 HTTPS_PORT=$(conf HTTPS_PORT)
 BIND_ADDR=$( [ "$(conf FRONT)" = proxy ] && echo 127.0.0.1 || echo 0.0.0.0 )
@@ -246,7 +247,7 @@ mas_ensure_user() { # localpart password admin(0|1)
 tls_selfsigned() {
     local d live ca host sb sbchat
     d=$(MATRIX_DIR); host=$(conf MATRIX_HOST); sb=$(conf SB_HOST); sbchat=$(conf SBCHAT_HOST)
-    ca="$d/ca"; live="$d/letsencrypt/live/$host"
+    ca="$d/ca"; live="$d/letsencrypt/live/$host"; local WPH; WPH=$(conf WP_HOST)
     mkdir -p "$ca" "$live"; chmod 700 "$ca"
     if [ ! -f "$ca/ca.pem" ]; then
         openssl req -x509 -newkey rsa:3072 -sha256 -days 3650 -nodes -subj "/CN=SwitchBoard local CA" \
@@ -255,9 +256,11 @@ tls_selfsigned() {
     fi
     chmod 644 "$ca/ca.pem"   # public; read by non-root users in the curl and SwitchBoard containers
     if [ ! -f "$live/fullchain.pem" ] || ! openssl x509 -checkend 2592000 -noout -in "$live/fullchain.pem" >/dev/null 2>&1 \
-       || ! openssl x509 -noout -ext subjectAltName -in "$live/fullchain.pem" 2>/dev/null | grep -q "DNS:$sbchat"; then
+       || ! openssl x509 -noout -ext subjectAltName -in "$live/fullchain.pem" 2>/dev/null | grep -q "DNS:$sbchat" \
+       || { [ -n "$(conf WP_HOST)" ] && ! openssl x509 -noout -ext subjectAltName -in "$live/fullchain.pem" 2>/dev/null | grep -q "DNS:$(conf WP_HOST)"; }; then
         openssl req -newkey rsa:2048 -nodes -subj "/CN=$host" -keyout "$live/privkey.pem" -out "$ca/leaf.csr" 2>/dev/null
-        printf 'subjectAltName=DNS:%s,DNS:%s,DNS:%s\nextendedKeyUsage=serverAuth\n' "$host" "$sb" "$sbchat" > "$ca/leaf.ext"
+        printf 'subjectAltName=DNS:%s,DNS:%s,DNS:%s%s\nextendedKeyUsage=serverAuth\n' "$host" "$sb" "$sbchat" \
+            "${WPH:+,DNS:$WPH}" > "$ca/leaf.ext"
         openssl x509 -req -in "$ca/leaf.csr" -CA "$ca/ca.pem" -CAkey "$ca/ca.key" -CAcreateserial -days 825 -sha256 \
             -extfile "$ca/leaf.ext" -out "$live/cert.pem" 2>/dev/null
         cat "$live/cert.pem" "$ca/ca.pem" > "$live/fullchain.pem"
@@ -273,29 +276,39 @@ nginx_render() { # [primer]
         cat > "$d/nginx/default.conf" <<EOF
 server {
     listen 80;
-    server_name $(conf MATRIX_HOST) $(conf SB_HOST) $(conf SBCHAT_HOST);
+    server_name $(conf MATRIX_HOST) $(conf SB_HOST) $(conf SBCHAT_HOST) $(conf WP_HOST);
     location /.well-known/acme-challenge/ { root /var/www/certbot; }
     location / { return 503; }
 }
 EOF
     else
+        local wp; wp=$(conf WP_HOST)
         sed -e "s/@MATRIX_HOST@/$(conf MATRIX_HOST)/g" -e "s/@SB_HOST@/$(conf SB_HOST)/g" \
-            -e "s/@SBCHAT_HOST@/$(conf SBCHAT_HOST)/g" -e "s/@CERT@/$(conf MATRIX_HOST)/g" \
-            "$COMPOSER_DIR/matrix/nginx.conf.tmpl" > "$d/nginx/default.conf"
+            -e "s/@SBCHAT_HOST@/$(conf SBCHAT_HOST)/g" -e "s/@CERT@/$(conf MATRIX_HOST)/g" -e "s/@WP_HOST@/$wp/g" \
+            "$COMPOSER_DIR/matrix/nginx.conf.tmpl" \
+            | if [ -n "$wp" ]; then cat; else sed '/# @WP_BEGIN@/,/# @WP_END@/d'; fi > "$d/nginx/default.conf"
     fi
 }
 
 tls_letsencrypt() {
-    local d host; d=$(MATRIX_DIR); host=$(conf MATRIX_HOST)
-    if [ ! -f "$d/letsencrypt/live/$host/fullchain.pem" ]; then
-        say "Requesting a Let's Encrypt certificate (port 80 must reach this machine)"
+    local d host wp names; d=$(MATRIX_DIR); host=$(conf MATRIX_HOST); wp=$(conf WP_HOST)
+    names="$host $(conf SB_HOST) $(conf SBCHAT_HOST)${wp:+ $wp}"
+    # certbot's live/ folder is root-only: the names already covered are recorded in composer.env instead
+    [ "$(conf LE_NAMES)" = "$names" ] && return 0
+    say "Requesting a Let's Encrypt certificate for: $names (port 80 must reach this machine)"
+    if [ -z "$(conf LE_NAMES)" ]; then
+        # first certificate: nginx cannot start its https servers yet, so serve only the challenge
         nginx_render primer
         mx_compose up -d nginx >&2
-        docker run --rm -v "$d/letsencrypt:/etc/letsencrypt" -v "$d/certbot-www:/var/www/certbot" "$(conf CERTBOT_IMAGE)" \
-            certonly --webroot -w /var/www/certbot --email "$(conf EMAIL)" --agree-tos --non-interactive \
-            --keep-until-expiring --expand --cert-name "$host" -d "$host" -d "$(conf SB_HOST)" -d "$(conf SBCHAT_HOST)" >&2 \
-            || die "$EXIT_START" "Let's Encrypt refused the certificate (DNS of the three names must point here)"
     fi
+    # (adding a name later: the running nginx already serves /.well-known/acme-challenge/ on port 80)
+    local args=() n
+    for n in $names; do args+=(-d "$n"); done
+    docker run --rm -v "$d/letsencrypt:/etc/letsencrypt" -v "$d/certbot-www:/var/www/certbot" "$(conf CERTBOT_IMAGE)" \
+        certonly --webroot -w /var/www/certbot --email "$(conf EMAIL)" --agree-tos --non-interactive \
+        --keep-until-expiring --expand --cert-name "$host" "${args[@]}" >&2 \
+        || die "$EXIT_START" "Let's Encrypt refused the certificate (the DNS of every name must point here)"
+    env_set "$CONF" LE_NAMES "$names"
 }
 
 matrix_up() {

@@ -42,7 +42,8 @@ CA_ARGS=()
 vcurl() { docker run --rm -i --network web "${CA_ARGS[@]}" "$(conf CURL_IMAGE)" -s --max-time 30 "$@"; }
 http_code() { vcurl -o /dev/null -w '%{http_code}' "$@"; }
 code_is() { [ "$(http_code "${@:2}")" = "$1" ]; }
-body_has() { vcurl "${@:2}" | grep -q -- "$1"; }
+# reads the whole body first: with pipefail, "curl | grep -q" fails when grep stops early (SIGPIPE)
+body_has() { local b; b=$(vcurl "${@:2}") && grep -q -- "$1" <<<"$b"; }
 
 step "Containers"
 for c in synapse-nginx synapse mas masdb sb_web_server sb_php-fpm sb_mariadb sb_mail_relay sb-chat; do
@@ -88,6 +89,17 @@ check "Matrix password login through MAS (@$(conf ADMIN_LOCALPART):$MATRIX)" mat
 step "SwitchBoardChat"
 check "scripts/install.sh --check (bridge ready, .env, admin token, port 3443)" "$(SBCHAT_DIR)/scripts/install.sh" --check
 check "the bridge logged in as @$(conf BOT_LOCALPART):$MATRIX" sh -c "docker logs sb-chat 2>&1 | grep -q 'The client is ready'"
+
+if [ -n "$(conf WP_HOST)" ]; then
+    WPH=$(conf WP_HOST)
+    step "WordPress with WP Chat (https://$WPH)"
+    check "container sbwp is running" container_running sbwp
+    check "https://$WPH answers" code_is 200 "https://$WPH/"
+    check "its pages carry the WP Chat widget" body_has 'wp-chat' "https://$WPH/"
+    check "the widget points to https://$SBCHAT" body_has "$SBCHAT" "https://$WPH/"
+    check "the bridge accepts web chats from https://$WPH (CORS)" sh -c \
+        "docker run --rm --network web ${CA_ARGS[*]} $(conf CURL_IMAGE) -s -D - -o /dev/null --max-time 20 -X OPTIONS -H 'Origin: https://$WPH' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: content-type' https://$SBCHAT/web/session | grep -qi 'access-control-allow-origin: https://$WPH'"
+fi
 
 step "SwitchBoard ↔ SwitchBoardChat ↔ MAS"
 STATUS=$(sb_wire_php "{\"action\":\"status\",\"admin_username\":\"$(conf SB_ADMIN_USER)\"}")

@@ -38,6 +38,14 @@ published on 80/443. Create one proxy host in the proxy with the three names, fo
 `synapse-nginx` / `8080` on the Docker network `web`, with websockets, a Let's Encrypt certificate and Force SSL.
 `tools/npm-proxy-host.py` does this through Nginx Proxy Manager's API.
 
+**A website with the chat widget**: `--wordpress-host www.example.org` also installs a WordPress site with
+[WP Chat](https://github.com/Switchboarders/wp_chat) (GPL-2.0-or-later). The plugin comes already connected to
+this installation's bridge, and the site's address is allowed for web chats (`WEB_ALLOWED_ORIGINS`). The site
+is served by the same front nginx: point its DNS to the machine, or add the name to the upstream proxy's entry
+with `--behind-proxy`. It starts with French (Canada), a home page and a privacy page. Updates refresh the
+plugin from its repository and keep everything you changed in WordPress. For visitors to reach respondents,
+also give `--web-call-center ID`: the SwitchBoard call center whose respondents answer web chats.
+
 **Windows** (Docker Desktop + Git for Windows): `install.cmd` / `.\install.ps1`, same options. The default
 folder is `%USERPROFILE%\switchboard`, and databases live in Docker volumes.
 
