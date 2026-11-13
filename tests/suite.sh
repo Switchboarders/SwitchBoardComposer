@@ -15,7 +15,7 @@
 #   sms       voip.ms webhook (key checked) -> room, both read it, number hidden, answer queued (muted), !fin
 #   server    the muted SMS answer reached the voip.ms queue; Law 25: closed rooms purged from Synapse
 #   restart   every service restarted -> a new web chat still works end to end
-#   outside   from HOST on another network: DNS, certificates, redirects, discovery, federation, what must
+#   outside   from HOST on another network ("local": from this machine through the public names): DNS, certificates, redirects, discovery, federation, what must
 #             NOT be exposed, CORS; then a web chat from there answered by a respondent here
 set -uo pipefail
 umask 077
@@ -49,6 +49,8 @@ DID=5145550199
 WELCOME="Bienvenue sur le clavardage de test sbcomposer, un bénévole va vous répondre."
 MERCI="Merci d'avoir écrit au clavardage de test sbcomposer."
 RESP_A=sbctest-resp-a RESP_B=sbctest-resp-b SBUSER=sbctest-sbuser
+PRIVACY_OFFICER="Responsable test sbcomposer, vie.privee@sbcomposer.invalid"
+NOTIFY="Message de SwitchBoard aux répondants $(rand_hex 4)"
 RESP_PW=$(conf TEST_RESPONDENT_PASSWORD); [ -n "$RESP_PW" ] || { RESP_PW=$(rand_password); env_set "$CONF" TEST_RESPONDENT_PASSWORD "$RESP_PW"; }
 SBUSER_PW=$(conf TEST_SBUSER_PASSWORD); [ -n "$SBUSER_PW" ] || { SBUSER_PW=$(rand_password); env_set "$CONF" TEST_SBUSER_PASSWORD "$SBUSER_PW"; }
 RESULTS="$COMPOSER_DIR/tests/results/suite"; mkdir -p "$RESULTS"
@@ -66,8 +68,11 @@ skip() { case "$SKIP" in *",$1,"*) say "(skipped: $1)"; return 0 ;; esac; return
 
 # How the test containers reach the installation: through the public names (real certificates: Let's Encrypt
 # or the upstream proxy), or, on a self-signed test machine, through the front nginx on the "web" network.
-NET_ARGS=()
+NET_ARGS=() BAN_TEST=0
 if [ "$(conf TLS_MODE)" = selfsigned ] && [ "$(conf FRONT)" != proxy ]; then
+    # visitors come straight to the front nginx: banning the test visitor's address is harmless here
+    # (behind Cloudflare/a proxy it could be a shared edge address: no ban test there)
+    BAN_TEST=1
     NET_ARGS=(--network web -v "$D/sbcomposer-ca-bundle.pem:/etc/ssl/certs/ca-certificates.crt:ro" -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt)
     CURL_CA=(-v "$(MATRIX_DIR)/ca/ca.pem:/ca.pem:ro" -e CURL_CA_BUNDLE=/ca.pem)
 else
@@ -89,14 +94,17 @@ sqlite_bridge() { # SQL -> rows (read-only, the bridge's users.db)
         "import sqlite3,sys; c=sqlite3.connect('file:/app/data/db/users.db?mode=ro', uri=True); [print('|'.join(map(str,r))) for r in c.execute(sys.argv[1])]" "$1"
 }
 suite_py() { # scenario... (output also kept in $RESULTS/py.log)
-    docker run --rm -i "${NET_ARGS[@]}" \
+    docker run --rm -i "${NET_ARGS[@]}" -v "$SYNC:/sync:ro" \
         -e MATRIX_HOST="$MATRIX" -e SB_HOST="$SB" -e SBCHAT_HOST="$SBCHAT" -e ORIGIN="$ORIGIN" \
         -e RESP_A="$RESP_A" -e RESP_B="$RESP_B" -e RESP_PW -e SBUSER="$SBUSER" -e SBUSER_PW \
         -e CC_TOKEN -e DID="$DID" -e WELCOME="$WELCOME" -e MERCI="$MERCI" -e NONCE="${NONCE:-}" \
+        -e PRIVACY_OFFICER="$PRIVACY_OFFICER" -e NOTIFY="$NOTIFY" -e BAN_TEST="$BAN_TEST" \
         sbcomposer-sim python3 - "$@" < "$COMPOSER_DIR/tests/suite.py" 2>&1 | tee -a "$RESULTS/py.log"
 }
 export RESP_PW SBUSER_PW
 : > "$RESULTS/py.log"
+SYNC="$RESULTS/sync"; rm -rf "$SYNC"; mkdir -p "$SYNC"; chmod 755 "$SYNC"
+queued() { sqlite_bridge "SELECT COUNT(*) FROM to_voipms_queue WHERE processing_level='Test mode'" 2>/dev/null || echo 0; }
 
 # ------------------------------------------------------------------------------------------ health
 step "health"
@@ -142,19 +150,55 @@ env_set "$ENVF" WEB_CALL_CENTER_ID "$CC_ID"
 env_set "$ENVF" WEB_CHALLENGE off
 env_set "$ENVF" MUTE_VOIPMS_REQUEST true
 env_set "$ENVF" ROOM_PURGE_DELAY_SECS 20
+env_set "$ENVF" PRIVACY_OFFICER "\"$PRIVACY_OFFICER\""
 restart_bridge && pass "bridge restarted: web chat on call center $CC_ID, outgoing SMS muted" || { fail "bridge restart"; exit 1; }
-SENT_BEFORE=$(sqlite_bridge "SELECT COUNT(*) FROM to_voipms_queue WHERE processing_level='Test mode'" 2>/dev/null || echo 0)
+SENT_BEFORE=$(queued)
 
 # ------------------------------------------------------------------------------------------ conversations
-step "accounts, webchat, sms"
-count < <(suite_py accounts webchat sms | grep -E '^(PASS|FAIL)')
+step "accounts, webchat, sms, devices"
+# The scenarios run in the background; at their WAIT lines this script checks the bridge's database
+suite_py accounts webchat sms devices > "$RESULTS/main.log" 2>&1 &
+PYPID=$!
+while kill -0 "$PYPID" 2>/dev/null; do
+    if grep -q '^WAIT sms_queue' "$RESULTS/main.log" && [ ! -e "$SYNC/sms_queue" ]; then
+        SENT_MID=$(queued)
+        [ "${SENT_MID:-0}" -gt "${SENT_BEFORE:-0}" ] && pass "the respondent's SMS answer reached the voip.ms queue (muted: not sent)" \
+            || fail "no muted SMS in the voip.ms queue ($SENT_BEFORE -> $SENT_MID)"
+        touch "$SYNC/sms_queue"
+    fi
+    if grep -q '^WAIT sms_erased' "$RESULTS/main.log" && [ ! -e "$SYNC/sms_erased" ]; then
+        SENT_END=$(queued)
+        [ "${SENT_END:-0}" -lt "${SENT_MID:-0}" ] && pass "!oubli also erased the caller's queued SMS (Law 25)" \
+            || fail "!oubli left the caller's SMS in the voip.ms queue ($SENT_MID -> $SENT_END)"
+        touch "$SYNC/sms_erased"
+    fi
+    sleep 1
+done
+wait "$PYPID"
+count < <(grep -E '^(PASS|FAIL)' "$RESULTS/main.log")
+
+# ------------------------------------------------------------------------------------------ team
+if ! skip team; then
+    step "agreement and messages from SwitchBoard"
+    suite_py team > "$RESULTS/team.log" 2>&1 &
+    TPID=$!
+    for _ in $(seq 1 150); do grep -q '^SIGNED' "$RESULTS/team.log" && break; sleep 2; done
+    OUT=$(sb_wire_php "{\"action\":\"agreement_list\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC_TOKEN\"}")
+    case "$OUT" in *'"configured":true'*) pass "SwitchBoard: the agreement is configured" ;; *) fail "SwitchBoard agreement list: ${OUT:0:200}" ;; esac
+    case "$OUT" in *"\"@$RESP_A:$MATRIX\":{\"signed_current\":true"*) pass "SwitchBoard: respondent A has signed (typed name recorded)" ;; *) fail "SwitchBoard does not list A as signed: ${OUT:0:300}" ;; esac
+    case "$OUT" in *"\"@$RESP_B:$MATRIX\":{\"signed_current\":false"*) pass "SwitchBoard: respondent B has not signed" ;; *) fail "SwitchBoard B status: ${OUT:0:300}" ;; esac
+    OUT=$(sb_wire_php "{\"action\":\"agreement_send\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC_TOKEN\"}")
+    case "$OUT" in *'"ok":true'*) pass "SwitchBoard 'send now' accepted ($OUT)" ;; *) fail "SwitchBoard send_agreement: $OUT" ;; esac
+    OUT=$(sb_wire_php "$(printf '{"action":"notify","admin_username":"%s","token":"%s","respondents":["@%s:%s","@%s:%s"],"message":"%s"}' \
+        "$(conf SB_ADMIN_USER)" "$CC_TOKEN" "$RESP_A" "$MATRIX" "$RESP_B" "$MATRIX" "$(json_escape "$NOTIFY")")")
+    case "$OUT" in *'"ok":true'*) pass "SwitchBoard sends a message to the respondents (SBChat send_message)" ;; *) fail "SwitchBoard send_message: $OUT" ;; esac
+    wait "$TPID"
+    count < <(grep -E '^(PASS|FAIL)' "$RESULTS/team.log")
+fi
 
 # ------------------------------------------------------------------------------------------ server side
 if ! skip server; then
     step "server side"
-    SENT_AFTER=$(sqlite_bridge "SELECT COUNT(*) FROM to_voipms_queue WHERE processing_level='Test mode'" 2>/dev/null || echo 0)
-    [ "${SENT_AFTER:-0}" -gt "${SENT_BEFORE:-0}" ] && pass "the respondent's SMS answer reached the voip.ms queue (muted: not sent)" \
-        || fail "no muted SMS in the voip.ms queue ($SENT_BEFORE -> $SENT_AFTER)"
     # Law 25: a closed room is purged from Synapse (the bridge does it through MAS, ROOM_PURGE_DELAY_SECS)
     # A short-lived Synapse admin token for these checks (mas-cli prints it in its log output), logged out after
     TOKEN=$(mas_cli manage issue-compatibility-token "$(conf ADMIN_LOCALPART)" --yes-i-want-to-grant-synapse-admin-privileges 2>&1 \
@@ -197,10 +241,18 @@ fi
 if [ -n "$OUTSIDE" ] && ! skip outside; then
     step "outside network: $OUTSIDE"
     OSSH=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RESULTS/known_hosts")
-    ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" 'mkdir -p /tmp/sbcsuite' \
-        && scp -q "${OSSH[@]}" -P "$OUTSIDE_PORT" "$COMPOSER_DIR/tests/outside.py" "$D/tests/e2e/lib.py" "$OUTSIDE:/tmp/sbcsuite/" \
-        || fail "could not copy the checks to $OUTSIDE"
-    remote() { ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" "cd /tmp/sbcsuite && MATRIX_HOST=$MATRIX SB_HOST=$SB SBCHAT_HOST=$SBCHAT ORIGIN=$ORIGIN NONCE=${NONCE:-} python3 -I outside.py $*"; }
+    if [ "$OUTSIDE" = local ]; then
+        # --outside local: the same checks from this machine, through the public names (Cloudflare, the
+        # upstream proxy): what an outside visitor gets, minus the foreign network
+        OUTDIR="$RESULTS/outside"; mkdir -p "$OUTDIR"
+        cp "$COMPOSER_DIR/tests/outside.py" "$D/tests/e2e/lib.py" "$OUTDIR/"
+        remote() { (cd "$OUTDIR" && MATRIX_HOST=$MATRIX SB_HOST=$SB SBCHAT_HOST=$SBCHAT ORIGIN=$ORIGIN NONCE=${NONCE:-} python3 -I outside.py "$@"); }
+    else
+        ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" 'mkdir -p /tmp/sbcsuite' \
+            && scp -q "${OSSH[@]}" -P "$OUTSIDE_PORT" "$COMPOSER_DIR/tests/outside.py" "$D/tests/e2e/lib.py" "$OUTSIDE:/tmp/sbcsuite/" \
+            || fail "could not copy the checks to $OUTSIDE"
+        remote() { ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" "cd /tmp/sbcsuite && MATRIX_HOST=$MATRIX SB_HOST=$SB SBCHAT_HOST=$SBCHAT ORIGIN=$ORIGIN NONCE=${NONCE:-} python3 -I outside.py $*"; }
+    fi
     count < <(remote public 2>&1 | grep -E '^(PASS|FAIL)')
     NONCE=$(rand_hex 4); export NONCE
     suite_py responder > "$RESULTS/responder.log" 2>&1 &
@@ -209,6 +261,6 @@ if [ -n "$OUTSIDE" ] && ! skip outside; then
     count < <(remote visitor 2>&1 | grep -E '^(PASS|FAIL)')
     wait "$RPID"
     count < <(grep -E '^(PASS|FAIL)' "$RESULTS/responder.log")
-    ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" 'rm -rf /tmp/sbcsuite'
+    [ "$OUTSIDE" = local ] || ssh "${OSSH[@]}" -p "$OUTSIDE_PORT" "$OUTSIDE" 'rm -rf /tmp/sbcsuite'
 fi
 exit $(( FAILS > 0 ))

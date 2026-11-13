@@ -3,7 +3,10 @@
 # SwitchBoardChat still work? Runs tests/run-linux.sh in throwaway Docker-in-Docker machines:
 #   1. debian: install at the last commits that passed, then update to main (the real update path);
 #      the first night (nothing passed yet): install main, then re-run (update path) on main;
-#   2. one more distribution, rotating each night (ubuntu, fedora, arch, alpine): install + update on main.
+#   2. one more distribution, rotating each night (ubuntu, fedora, arch, alpine): install + update on main;
+#   (each test machine: install -> verify --functional -> update -> verify --functional -> tests/suite.sh)
+#   3. with LIVE_PREFIX set: the live installation of this machine is updated to main (install.sh) and the
+#      complete suite runs against it through its public names (tests/suite.sh --outside local).
 # On success the tested commits become the new "last good" ones. On failure: an email and a GitHub issue
 # (one open issue, commented on each failure, closed by the next success).
 #
@@ -56,6 +59,26 @@ else
 fi
 run "$EXTRA: install + update on main" --distros "$EXTRA"
 
+# 3. The live installation of this machine (LIVE_PREFIX in nightly.env): the real update path on real data,
+#    then the complete functional suite against it, through its public names
+if [ -n "${LIVE_PREFIX:-}" ]; then
+    echo; echo "################ live installation $LIVE_PREFIX: update + full suite"
+    if [ "${LIVE_UPDATE:-1}" = 1 ]; then
+        if "$ROOT/install.sh" --non-interactive --prefix "$LIVE_PREFIX" > "$STATE/logs/live-update.log" 2>&1; then
+            SUMMARY+="PASS  live: update to main + verify"$'\n'
+        else
+            SUMMARY+="FAIL  live: update or verify (see $STATE/logs/live-update.log)"$'\n'; FAILED=1
+            grep -a -E '^FAIL|sbcomposer: ' "$STATE/logs/live-update.log" | tail -n 10
+        fi
+    fi
+    if "$ROOT/tests/suite.sh" --confirm --prefix "$LIVE_PREFIX" --outside "${LIVE_OUTSIDE:-local}" > "$STATE/logs/live-suite.log" 2>&1; then
+        SUMMARY+="PASS  live: full suite ($(grep -a '^Suite:' "$STATE/logs/live-suite.log"))"$'\n'
+    else
+        SUMMARY+="FAIL  live: full suite ($(grep -a '^Suite:' "$STATE/logs/live-suite.log"))"$'\n'; FAILED=1
+    fi
+    grep -a -E '^FAIL' "$STATE/logs/live-suite.log"
+fi
+
 SB_HEAD=$(git ls-remote https://github.com/Switchboarders/SwitchBoard.git refs/heads/main | cut -c1-40)
 SBCHAT_HEAD=$(git ls-remote https://github.com/Switchboarders/SwitchBoardChat.git refs/heads/main | cut -c1-40)
 # The commits actually tested (main may have moved during the run)
@@ -67,7 +90,8 @@ echo; echo "################ Summary"; printf '%s' "$SUMMARY"; echo "$COMMITS"
 
 # Failed checks only (never secrets: the scripts do not print any), for the email and the issue
 details() {
-    grep -h -E '^(FAIL|PASS  \[)|sbcomposer: ' "$ROOT"/tests/results/*/*.log 2>/dev/null | grep -E '^FAIL|sbcomposer: ' | head -n 40
+    { grep -a -h -E '^FAIL|sbcomposer: ' "$ROOT"/tests/results/*/*.log 2>/dev/null
+      [ -z "${LIVE_PREFIX:-}" ] || grep -a -h -E '^FAIL|sbcomposer: ' "$STATE"/logs/live-*.log 2>/dev/null; } | head -n 40
 }
 
 send_mail() { # subject body

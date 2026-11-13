@@ -72,6 +72,31 @@ if ($cfg['action'] === 'macro') {
 	exit(0);
 }
 
+// agreement_list / agreement_send / notify: SwitchBoard's agreement page and its message to respondents
+if (in_array($cfg['action'], ['agreement_list', 'agreement_send', 'notify'], true)) {
+	$info = $db->getSbchatinfobyId($id) ?: [];
+	$client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');
+	if ($cfg['action'] === 'agreement_list') {
+		$list = $client->list_agreement_signatures($cfg['token']);
+		$people = [];
+		foreach (($list['respondents'] ?? []) as $p) {
+			$people[$p['respondent']] = ['signed_current' => (bool)($p['signed_current'] ?? false),
+				'typed_name' => $p['latest']['typed_name'] ?? null];
+		}
+		$result = ['ok' => is_array($list), 'configured' => (bool)($list['configured'] ?? false),
+			'version' => $list['version'] ?? null, 'sha256_len' => strlen((string)($list['sha256'] ?? '')), 'people' => $people];
+	} elseif ($cfg['action'] === 'agreement_send') {
+		[$ok, $sent] = $client->send_agreement($cfg['token']);
+		$result = ['ok' => (bool)$ok, 'sent' => $sent];
+	} else {
+		$r = $client->send_message_to_respondents($cfg['token'], $cfg['respondents'], $cfg['message']);
+		$result = ['ok' => is_array($r) && str_starts_with((string)($r['querystatus'] ?? ''), 'Success'), 'status' => $r['querystatus'] ?? null];
+	}
+	ob_end_clean();
+	out($result);
+	exit(0);
+}
+
 // status: is the wiring there, and does SwitchBoard reach SBChat and MAS with it?
 $info = $db->getSbchatinfobyId($id) ?: [];
 $client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');

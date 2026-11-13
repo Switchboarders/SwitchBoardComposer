@@ -74,6 +74,17 @@ def http_json(url, body=None, headers=None, method=None, timeout=30):
             return e.code, {}
 
 
+def host_step(name, info=""):
+    """Lets tests/suite.sh check something on the server (its database) at this exact point: prints
+    WAIT <name>, then waits for the host to create /sync/<name>."""
+    print(f"WAIT {name} {info}".rstrip(), flush=True)
+    for _ in range(120):
+        if os.path.exists(f"/sync/{name}"):
+            return
+        time.sleep(1)
+    print(f"(host step {name} timed out)", flush=True)
+
+
 def utd_in(s, room):
     return [e for e in s.events if e["event"] == "utd" and e.get("room") == room]
 
@@ -191,7 +202,8 @@ def sc_sms():
         sent = a.send(room, f"Réponse par texto {nonce}")
         check("respondent's SMS answer is accepted by the bridge", bool(sent and sent.get("ok")), str(sent))
         time.sleep(5)
-        print(f"SMS_NONCE {nonce}", flush=True)
+        # the host checks the voip.ms queue now (before !oubli erases everything about this caller)
+        host_step("sms_queue", f"CALLER {caller}")
         m = a.mark()
         a.send(room, "!fin")
         check("!fin in an SMS room explains it is for web chats (use !stop / !oubli)",
@@ -199,6 +211,8 @@ def sc_sms():
         a.send(room, "!oubli")
         check("!oubli (right to erasure) erases the caller and closes the SMS room",
               a.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 90, m) is not None)
+        time.sleep(5)
+        host_step("sms_erased", f"CALLER {caller}")
 
 
 def sc_responder():
@@ -217,7 +231,90 @@ def sc_responder():
         a.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 120, m)
 
 
-SCENARIOS = {"accounts": sc_accounts, "webchat": sc_webchat, "sms": sc_sms, "responder": sc_responder}
+def sc_devices():
+    print("== Second device, !ok (private room)" + (", ban" if E.get("BAN_TEST") == "1" else ""), flush=True)
+    a, b = sim("a"), sim("b")
+    a2 = SIMS.get("a2") or lib.Sim(E["RESP_A"], f"suite-a2-{uuid.uuid4().hex[:4]}", settle=8)
+    SIMS["a2"] = a2
+    check("respondent A on a second device (phone + computer) logs in", a2.device is not None)
+    nonce = uuid.uuid4().hex[:8]
+    ma, mb, m2 = a.mark(), b.mark(), a2.mark()
+    v = lib.Visitor(origin=lib.ORIGIN).start()
+    v.open_stream()
+    v.say(f"Deuxième conversation {nonce}")
+    room = a2.wait_room(m2, 90)
+    check("the second device is invited to the new chat", room is not None)
+    check("the second device reads the message", a2.wait_message(nonce, m2, 90) is not None)
+    check("the first device reads it too", a.wait_message(nonce, ma, 90) is not None)
+    if not room:
+        return
+    sent = a2.send(room, f"Réponse depuis l'ordinateur {nonce}")
+    check("the visitor receives the second device's answer", v.wait_text(f"depuis l'ordinateur {nonce}", 60) is not None, str(v.texts()))
+    b.wait_room(mb, 30)
+    mb = b.mark()
+    m = a.mark()
+    a.send(room, "!ok")
+    check("!ok is acknowledged (private room)", a.wait_message("Salle privée", m, 30) is not None or a.wait_message("Private room", m, 30) is not None)
+    check("!ok removes the other respondents", b.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 60, mb) is not None)
+    sent = a.send(room, f"Seulement moi {nonce}")
+    check("the visitor can still be answered after !ok", v.wait_text(f"Seulement moi {nonce}", 60) is not None, str(v.texts()))
+    if E.get("BAN_TEST") == "1":
+        m = a.mark()
+        a.send(room, "!bloquer 1")
+        check("!bloquer ends the chat for the abusive visitor", v.wait_event("closed", 60), str(v.events[-3:]))
+        status, body = lib.Visitor(origin=lib.ORIGIN)._req("POST", "/web/session", {})
+        check("a banned visitor cannot open a new chat", status in (403, 429), f"{status} {body}")
+        status, body = http_json(f"https://{E['SBCHAT_HOST']}/sbchat_api", {"command": "web_unban", "api_token": E["CC_TOKEN"], "ip": "all"},
+                                 headers={"Authorization": "Bearer " + E["CC_TOKEN"]})
+        check("SwitchBoard's web_unban lifts the ban", status == 200 and str(body.get("querystatus", "")).startswith("Success"), f"{status} {body}")
+        check("the visitor can chat again", lib.Visitor(origin=lib.ORIGIN).start().token is not None)
+    else:
+        v.close_stream()
+        v.end()
+
+
+def user_room(s):
+    for _ in range(10):
+        for r in s.rooms():
+            if "Salle Utilisateur" in (r.get("name") or "") and r.get("state") == "Joined":
+                return r["room"]
+        time.sleep(3)
+    return None
+
+
+def sc_team():
+    """Agreement + messages from SwitchBoard; tests/suite.sh acts as SwitchBoard when it reads SIGNED."""
+    print("== Agreement (Law 25) and messages from SwitchBoard", flush=True)
+    a, b = sim("a"), sim("b")
+    ra, rb = user_room(a), user_room(b)
+    check("each respondent has a user room with the bridge", ra is not None and rb is not None, f"{ra} {rb}")
+    if not ra:
+        print("SIGNED", flush=True)
+        return
+    m = a.mark()
+    a.send(ra, "!entente")
+    text = a.wait(lambda e: e["event"] == "message" and "ENTENTE DE CONFIDENTIALITÉ" in e.get("body", ""), 60, m)
+    check("!entente shows the confidentiality agreement", text is not None)
+    check("the privacy officer is written into it", text is not None and E["PRIVACY_OFFICER"] in text["body"])
+    m = a.mark()
+    a.send(ra, "!signer Répondant Test")
+    rec = a.wait(lambda e: e["event"] == "message" and "Entente de confidentialité signée" in e.get("body", ""), 60, m)
+    check("!signer gives a receipt with the name and the account", rec is not None and "Répondant Test" in rec["body"] and E["RESP_A"] in rec["body"],
+          (rec or {}).get("body", "")[:300])
+    mb_ = b.mark()
+    ma_ = a.mark()
+    print("SIGNED", flush=True)
+    check("SwitchBoard's 'send now' delivers the agreement to respondent B (not signed)",
+          b.wait(lambda e: e["event"] == "message" and "ENTENTE DE CONFIDENTIALITÉ" in e.get("body", ""), 120, mb_) is not None)
+    check("respondent A, who signed, does not get it again",
+          not a.wait(lambda e: e["event"] == "message" and "Merci de lire et de signer" in e.get("body", ""), 10, ma_))
+    note = E["NOTIFY"]
+    check("a message from SwitchBoard reaches respondent A", a.wait_message(note, ma_, 120) is not None)
+    check("a message from SwitchBoard reaches respondent B", b.wait_message(note, mb_, 120) is not None)
+
+
+SCENARIOS = {"accounts": sc_accounts, "webchat": sc_webchat, "sms": sc_sms, "responder": sc_responder,
+             "devices": sc_devices, "team": sc_team}
 try:
     for name in sys.argv[1:]:
         try:
