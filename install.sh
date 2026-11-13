@@ -261,12 +261,14 @@ fetch_repo "$(SBCHAT_DIR)" "$(conf SBCHAT_REPO)" "$(conf SBCHAT_REF)" switchboar
 docker network inspect web >/dev/null 2>&1 || docker network create web >/dev/null
 # Certificates first (self-signed: the CA is handed to SwitchBoard and the bridge)
 [ "$(conf TLS_MODE)" = selfsigned ] && { matrix_prepare_dirs; tls_selfsigned; }
+mail_oauth_migrate
 switchboard_up
 [ "$UPDATE" = 1 ] && switchboard_update_app
 matrix_up
 sbchat_up
 switchboard_first_admin
 switchboard_wire
+switchboard_mail_oauth
 
 # ---------------------------------------------------------------------------------------- summary
 CREDS="$PREFIX/credentials.txt"

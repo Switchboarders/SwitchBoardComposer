@@ -102,6 +102,41 @@ switchboard_wire() {
     esac
 }
 
+# OAuth2 mail (Microsoft 365 / Google): MAIL_OAUTH_PROVIDER, _CLIENT_ID, _CLIENT_SECRET (Google), _TENANT,
+# _MAILBOX in composer.env, stored the way SwitchBoard's wizard does (?page=mailoauth). In .env
+# (SB_SMTP_OAUTH_*) SwitchBoard would show the status only, with no way to authorize the mailbox.
+# The authorization itself (sign in as the mailbox at Microsoft/Google) is done once in that page.
+mail_oauth_migrate() {
+    local k
+    [ -n "$(env_get "$CONF" SB_SMTP_OAUTH_PROVIDER)" ] || return 0
+    env_default "$CONF" MAIL_OAUTH_PROVIDER "$(env_get "$CONF" SB_SMTP_OAUTH_PROVIDER)"
+    env_default "$CONF" MAIL_OAUTH_CLIENT_ID "$(env_get "$CONF" SB_SMTP_OAUTH_CLIENT_ID)"
+    env_default "$CONF" MAIL_OAUTH_TENANT "$(env_get "$CONF" SB_SMTP_OAUTH_TENANT)"
+    env_default "$CONF" MAIL_OAUTH_CLIENT_SECRET "$(env_get "$CONF" SB_SMTP_OAUTH_CLIENT_SECRET)"
+    env_default "$CONF" MAIL_OAUTH_MAILBOX "$(env_get "$CONF" SB_SMTP_USER)"
+    for k in SB_SMTP_OAUTH_PROVIDER SB_SMTP_OAUTH_CLIENT_ID SB_SMTP_OAUTH_TENANT SB_SMTP_OAUTH_CLIENT_SECRET SB_SMTP_USER; do
+        env_unset "$CONF" "$k"
+        env_unset "$(SB_DIR)/Docker/.env" "$k"
+    done
+    say "Mail OAuth settings moved from SwitchBoard's .env to its wizard (so the mailbox can be authorized)"
+}
+
+switchboard_mail_oauth() {
+    [ -n "$(conf MAIL_OAUTH_PROVIDER)" ] || return 0
+    local out
+    out=$(sb_wire_php "$(printf '{"action":"mail_oauth","admin_username":"%s","provider":"%s","client_id":"%s","client_secret":"%s","tenant":"%s","mailbox":"%s"}' \
+        "$(conf SB_ADMIN_USER)" "$(conf MAIL_OAUTH_PROVIDER)" "$(conf MAIL_OAUTH_CLIENT_ID)" "$(json_escape "$(conf MAIL_OAUTH_CLIENT_SECRET)")" \
+        "$(conf MAIL_OAUTH_TENANT)" "$(conf MAIL_OAUTH_MAILBOX)")")
+    case "$out" in
+        *'"changed":true'*)
+            # SwitchBoard generates its mail configuration when php starts
+            docker restart sb_php-fpm sb_mail_relay >/dev/null 2>&1
+            say "Mail OAuth ($(conf MAIL_OAUTH_PROVIDER), $(conf MAIL_OAUTH_MAILBOX)) set up: authorize the mailbox once in SwitchBoard (Console d'administration -> Courriel OAuth)" ;;
+        *'"ok":true'*) : ;;
+        *) say "WARNING: could not set up mail OAuth in SwitchBoard: ${out:-no answer}" ;;
+    esac
+}
+
 sb_backup() { # dir
     local pw; pw=$(env_get "$(SB_DIR)/Docker/.env" MYSQL_ROOT_PASSWORD)
     container_running sb_mariadb || return 0

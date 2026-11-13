@@ -38,6 +38,11 @@ env_set() { # file key value
     chmod 600 "$tmp"
     mv "$tmp" "$file"
 }
+env_unset() { # file key: removes KEY= lines
+    [ -f "$1" ] || return 0
+    local tmp; tmp=$(mktemp "$1.XXXXXX")
+    awk -v k="$2" 'index($0, k "=") != 1' "$1" > "$tmp"; chmod 600 "$tmp"; mv "$tmp" "$1"
+}
 # Sets KEY only when it is empty (generated secrets are created once and never rotated)
 env_default() { # file key value
     [ -n "$(env_get "$1" "$2")" ] || env_set "$1" "$2" "$3"

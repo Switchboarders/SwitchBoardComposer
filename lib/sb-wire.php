@@ -97,6 +97,26 @@ if (in_array($cfg['action'], ['agreement_list', 'agreement_send', 'notify'], tru
 	exit(0);
 }
 
+// mail_oauth: stores OAuth2 mail settings as SwitchBoard's own wizard does (?page=mailoauth), so the page
+// offers "Démarrer l'autorisation" (with SB_SMTP_OAUTH_* in .env it only shows a status). Existing
+// wizard settings are kept unless they differ.
+if ($cfg['action'] === 'mail_oauth') {
+	$current = reglagesOAuthCourriel();
+	$same = $current['fournisseur'] === $cfg['provider'] && $current['client_id'] === $cfg['client_id']
+		&& $current['tenant'] === ($cfg['tenant'] ?: 'common') && $current['mailbox_user'] === $cfg['mailbox'];
+	if (reglagesOAuthForceesParEnv()) {
+		$r = ['ok' => false, 'error' => 'SB_SMTP_OAUTH_PROVIDER is set in the environment (.env)'];
+	} elseif ($same) {
+		$r = ['ok' => true, 'changed' => false];
+	} else {
+		$r = ['ok' => enregistrerReglagesOAuthCourriel($cfg['provider'], $cfg['mailbox'], $cfg['client_id'], $cfg['client_secret'] ?? '', $cfg['tenant']),
+			'changed' => true];
+	}
+	ob_end_clean();
+	out($r);
+	exit(0);
+}
+
 // status: is the wiring there, and does SwitchBoard reach SBChat and MAS with it?
 $info = $db->getSbchatinfobyId($id) ?: [];
 $client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');
