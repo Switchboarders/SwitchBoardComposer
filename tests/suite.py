@@ -85,6 +85,18 @@ def host_step(name, info=""):
     print(f"(host step {name} timed out)", flush=True)
 
 
+def say(s, room, text):
+    """Sends as a respondent and returns the result; retries when the homeserver refuses for a moment
+    (e.g. Synapse's per-user message rate limit when the tests type faster than people)."""
+    for attempt in range(4):
+        sent = s.send(room, text)
+        if sent and sent.get("ok"):
+            return sent
+        print(f"(send of {text[:20]!r} refused: {sent}; retry {attempt + 1})", flush=True)
+        time.sleep(10)
+    return sent
+
+
 def utd_in(s, room):
     return [e for e in s.events if e["event"] == "utd" and e.get("room") == room]
 
@@ -142,18 +154,18 @@ def sc_webchat():
     if not room:
         return
     m = a.mark()
-    a.send(room, "!aide")
+    say(a, room, "!aide")
     check("!aide is answered in the room", a.wait_message("ommandes", m, 30) is not None)
     m = a.mark()
-    a.send(room, "!nimportequoi")
+    say(a, room, "!nimportequoi")
     check("an unknown command is answered", a.wait_message("inconnue", m, 30) is not None or a.wait_message("Unknown", m, 30) is not None)
     m = a.mark()
-    a.send(room, "#merci")
+    say(a, room, "#merci")
     check("a macro typed by a respondent (#merci) reaches the visitor", v.wait_text(E["MERCI"], 40) is not None, str(v.texts()))
-    sent = a.send(room, f"Bonjour, je suis là {nonce}")
+    sent = say(a, room, f"Bonjour, je suis là {nonce}")
     check("respondent A's answer is sent", bool(sent and sent.get("ok")), str(sent))
     check("the visitor receives the answer (server-sent events)", v.wait_text(f"je suis là {nonce}", 60) is not None, str(v.texts()))
-    sent = b.send(room, f"Et moi aussi {nonce}")
+    sent = say(b, room, f"Et moi aussi {nonce}")
     check("respondent B can also answer", v.wait_text(f"Et moi aussi {nonce}", 60) is not None, str(v.texts()))
     status, hist = v.history()
     texts = json.dumps(hist, ensure_ascii=False)
@@ -199,16 +211,16 @@ def sc_sms():
           not [e for e in a.events[ma:] if caller in json.dumps(e)], "number visible")
     if room:
         m = a.mark()
-        sent = a.send(room, f"Réponse par texto {nonce}")
+        sent = say(a, room, f"Réponse par texto {nonce}")
         check("respondent's SMS answer is accepted by the bridge", bool(sent and sent.get("ok")), str(sent))
         time.sleep(5)
         # the host checks the voip.ms queue now (before !oubli erases everything about this caller)
         host_step("sms_queue", f"CALLER {caller}")
         m = a.mark()
-        a.send(room, "!fin")
+        say(a, room, "!fin")
         check("!fin in an SMS room explains it is for web chats (use !stop / !oubli)",
               a.wait_message("seulement à un clavardage web", m, 30) is not None or a.wait_message("only applies to a web chat", m, 30) is not None)
-        a.send(room, "!oubli")
+        say(a, room, "!oubli")
         check("!oubli (right to erasure) erases the caller and closes the SMS room",
               a.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 90, m) is not None)
         time.sleep(5)
@@ -226,7 +238,7 @@ def sc_responder():
     if got:
         room = got.get("room")
         print(f"ROOM outside {room}", flush=True)
-        sent = a.send(room, f"pong {nonce}")
+        sent = say(a, room, f"pong {nonce}")
         check("respondent answers the outside visitor", bool(sent and sent.get("ok")), str(sent))
         a.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 120, m)
 
@@ -248,24 +260,24 @@ def sc_devices():
     check("the first device reads it too", a.wait_message(nonce, ma, 90) is not None)
     if not room:
         return
-    sent = a2.send(room, f"Réponse depuis l'ordinateur {nonce}")
+    sent = say(a2, room, f"Réponse depuis l'ordinateur {nonce}")
     check("the visitor receives the second device's answer", v.wait_text(f"depuis l'ordinateur {nonce}", 60) is not None, str(v.texts()))
     b.wait_room(mb, 30)
     mb = b.mark()
     m = a.mark()
-    a.send(room, "!ok")
+    say(a, room, "!ok")
     check("!ok is acknowledged (private room)", a.wait_message("Salle privée", m, 30) is not None or a.wait_message("Private room", m, 30) is not None)
     check("!ok removes the other respondents", b.wait(lambda e: e["event"] == "removed" and e.get("room") == room, 60, mb) is not None)
-    sent = a.send(room, f"Seulement moi {nonce}")
+    sent = say(a, room, f"Seulement moi {nonce}")
     check("the visitor can still be answered after !ok", v.wait_text(f"Seulement moi {nonce}", 60) is not None, str(v.texts()))
     if E.get("BAN_TEST") == "1":
         m = a.mark()
-        a.send(room, "!bloquer 1")
+        say(a, room, "!bloquer 1")
         check("!bloquer ends the chat for the abusive visitor", v.wait_event("closed", 60), str(v.events[-3:]))
         status, body = lib.Visitor(origin=lib.ORIGIN)._req("POST", "/web/session", {})
         check("a banned visitor cannot open a new chat", status in (403, 429), f"{status} {body}")
-        status, body = http_json(f"https://{E['SBCHAT_HOST']}/sbchat_api", {"command": "web_unban", "api_token": E["CC_TOKEN"], "ip": "all"},
-                                 headers={"Authorization": "Bearer " + E["CC_TOKEN"]})
+        status, body = http_json(f"https://{E['SBCHAT_HOST']}/sbchat_api", {"command": "web_unban", "ip": "all"},
+                                 headers={"Authorization": "Bearer " + E["ADMIN_TOKEN"]})
         check("SwitchBoard's web_unban lifts the ban", status == 200 and str(body.get("querystatus", "")).startswith("Success"), f"{status} {body}")
         check("the visitor can chat again", lib.Visitor(origin=lib.ORIGIN).start().token is not None)
     else:
@@ -292,12 +304,12 @@ def sc_team():
         print("SIGNED", flush=True)
         return
     m = a.mark()
-    a.send(ra, "!entente")
+    say(a, ra, "!entente")
     text = a.wait(lambda e: e["event"] == "message" and "ENTENTE DE CONFIDENTIALITÉ" in e.get("body", ""), 60, m)
     check("!entente shows the confidentiality agreement", text is not None)
     check("the privacy officer is written into it", text is not None and E["PRIVACY_OFFICER"] in text["body"])
     m = a.mark()
-    a.send(ra, "!signer Répondant Test")
+    say(a, ra, "!signer Répondant Test")
     rec = a.wait(lambda e: e["event"] == "message" and "Entente de confidentialité signée" in e.get("body", ""), 60, m)
     check("!signer gives a receipt with the name and the account", rec is not None and "Répondant Test" in rec["body"] and E["RESP_A"] in rec["body"],
           (rec or {}).get("body", "")[:300])

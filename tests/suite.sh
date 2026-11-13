@@ -98,10 +98,11 @@ suite_py() { # scenario... (output also kept in $RESULTS/py.log)
         -e MATRIX_HOST="$MATRIX" -e SB_HOST="$SB" -e SBCHAT_HOST="$SBCHAT" -e ORIGIN="$ORIGIN" \
         -e RESP_A="$RESP_A" -e RESP_B="$RESP_B" -e RESP_PW -e SBUSER="$SBUSER" -e SBUSER_PW \
         -e CC_TOKEN -e DID="$DID" -e WELCOME="$WELCOME" -e MERCI="$MERCI" -e NONCE="${NONCE:-}" \
-        -e PRIVACY_OFFICER="$PRIVACY_OFFICER" -e NOTIFY="$NOTIFY" -e BAN_TEST="$BAN_TEST" \
+        -e PRIVACY_OFFICER="$PRIVACY_OFFICER" -e NOTIFY="$NOTIFY" -e BAN_TEST="$BAN_TEST" -e ADMIN_TOKEN \
         sbcomposer-sim python3 - "$@" < "$COMPOSER_DIR/tests/suite.py" 2>&1 | tee -a "$RESULTS/py.log"
 }
-export RESP_PW SBUSER_PW
+ADMIN_TOKEN=$(head -n1 "$D/admin-api-token")
+export RESP_PW SBUSER_PW ADMIN_TOKEN
 : > "$RESULTS/py.log"
 SYNC="$RESULTS/sync"; rm -rf "$SYNC"; mkdir -p "$SYNC"; chmod 755 "$SYNC"
 queued() { sqlite_bridge "SELECT COUNT(*) FROM to_voipms_queue WHERE processing_level='Test mode'" 2>/dev/null || echo 0; }
