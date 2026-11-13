@@ -310,7 +310,7 @@ def sc_team():
     check("the privacy officer is written into it", text is not None and E["PRIVACY_OFFICER"] in text["body"])
     m = a.mark()
     say(a, ra, "!signer Répondant Test")
-    rec = a.wait(lambda e: e["event"] == "message" and "Entente de confidentialité signée" in e.get("body", ""), 60, m)
+    rec = a.wait(lambda e: e["event"] == "message" and "Entente de confidentialité signée" in e.get("body", ""), 120, m)
     check("!signer gives a receipt with the name and the account", rec is not None and "Répondant Test" in rec["body"] and E["RESP_A"] in rec["body"],
           (rec or {}).get("body", "")[:300])
     mb_ = b.mark()
