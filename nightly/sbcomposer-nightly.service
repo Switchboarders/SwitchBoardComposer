@@ -1,0 +1,10 @@
+[Unit]
+Description=sbcomposer nightly install check (SwitchBoard + SwitchBoardChat + Synapse + MAS)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/sbcomposer/nightly/nightly.sh
+TimeoutStartSec=4h
+Nice=10

@@ -1,0 +1,138 @@
+# Front reverse proxy (rendered by install.sh from matrix/nginx.conf.tmpl; edits here are overwritten).
+# Same routing as the production server: matrix host = Synapse + MAS under /auth/, sb host = SwitchBoard
+# (+ the web chat under /web/), sbchat host = the bridge's HTTP listener.
+# Upstreams are variables resolved by Docker's DNS at request time, so nginx starts even when
+# SwitchBoard or the bridge is not running yet (a missing one answers 502 instead).
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+server {
+    listen 80;
+    server_name @MATRIX_HOST@ @SB_HOST@ @SBCHAT_HOST@;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name @MATRIX_HOST@;
+    ssl_certificate /etc/letsencrypt/live/@CERT@/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/@CERT@/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Matrix Authentication Service, served under /auth/ (its public_base and issuer)
+    location /auth/ {
+        proxy_http_version 1.1;
+        set $mas mas:8080;
+        rewrite ^/auth/(.*)$ /$1 break;
+        proxy_pass http://$mas;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+    # Password login, logout and refresh are MAS's job (compatibility layer)
+    location ~ ^/_matrix/client/(.*)/(login|logout|refresh) {
+        proxy_http_version 1.1;
+        set $mas mas:8080;
+        proxy_pass http://$mas;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+    location ~ ^(/_matrix|/_synapse/client) {
+        set $synapse synapse:8008;
+        proxy_pass http://$synapse;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        client_body_buffer_size 25m;
+        client_max_body_size 50M;
+        proxy_read_timeout 60s;
+        proxy_http_version 1.1;
+    }
+    location = /.well-known/matrix/client {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin * always;
+        return 200 '{"m.homeserver":{"base_url":"https://@MATRIX_HOST@"},"org.matrix.msc2965.authentication":{"issuer":"https://@MATRIX_HOST@/auth/","account":"https://@MATRIX_HOST@/auth/account/"}}';
+    }
+    location = /.well-known/matrix/server {
+        default_type application/json;
+        return 200 '{"m.server":"@MATRIX_HOST@:443"}';
+    }
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name @SB_HOST@;
+    ssl_certificate /etc/letsencrypt/live/@CERT@/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/@CERT@/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    client_max_body_size 50M;
+
+    # Web chat widget: server-sent events must not be buffered. CORS headers come from sb-chat.
+    location /web/ {
+        set $sbchat sb-chat:8088;
+        proxy_pass http://$sbchat;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+    location / {
+        set $sbweb sb_web_server:80;
+        proxy_pass http://$sbweb;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name @SBCHAT_HOST@;
+    ssl_certificate /etc/letsencrypt/live/@CERT@/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/@CERT@/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location /web/ {
+        set $sbchat sb-chat:8088;
+        proxy_pass http://$sbchat;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+    location / {
+        set $sbchat sb-chat:8088;
+        proxy_pass http://$sbchat;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
