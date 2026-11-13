@@ -159,7 +159,9 @@ def sc_sms():
     a, b = sim("a"), sim("b")
     nonce = uuid.uuid4().hex[:8]
     ma, mb = a.mark(), b.mark()
-    q = urllib.parse.urlencode({"to": E["DID"], "from": "5145550123", "message": f"Bonjour par texto {nonce}",
+    # a new caller every run (555-01xx numbers are reserved for fiction): always a new conversation
+    caller = "51455501" + str(int(nonce, 16) % 100).zfill(2)
+    q = urllib.parse.urlencode({"to": E["DID"], "from": caller, "message": f"Bonjour par texto {nonce}",
                                 "id": str(int(time.time())), "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                                 # the key in SwitchBoard's hook URL: sha256 of the call center's token
                                 "sbchatapikey": hashlib.sha256(E["CC_TOKEN"].encode()).hexdigest()})
@@ -183,7 +185,7 @@ def sc_sms():
     check("respondent A reads the SMS", a.wait_message(nonce, ma, 90) is not None)
     check("respondent B reads the SMS", b.wait_message(nonce, mb, 90) is not None)
     check("the caller's number is not shown in clear to respondents",
-          not [e for e in a.events[ma:] if "5145550123" in json.dumps(e)], "number visible")
+          not [e for e in a.events[ma:] if caller in json.dumps(e)], "number visible")
     if room:
         m = a.mark()
         sent = a.send(room, f"Réponse par texto {nonce}")
