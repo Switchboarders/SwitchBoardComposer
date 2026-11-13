@@ -46,6 +46,25 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
+    # Synapse admin API: for the containers only (the bridge purges ended web chats through it, Law 25).
+    # Never through the upstream proxy (port 8080 = internet traffic from Nginx Proxy Manager), and on 443
+    # only from private addresses (Docker networks, LAN); it also needs an admin token.
+    location ^~ /_synapse/admin/ {
+        if ($server_port = 8080) {
+            return 404;
+        }
+        allow 127.0.0.0/8;
+        allow 10.0.0.0/8;
+        allow 172.16.0.0/12;
+        allow 192.168.0.0/16;
+        deny all;
+        set $synapse synapse:8008;
+        proxy_pass http://$synapse;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
     location ~ ^(/_matrix|/_synapse/client) {
         set $synapse synapse:8008;
         proxy_pass http://$synapse;
