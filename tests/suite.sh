@@ -169,7 +169,13 @@ if ! skip server; then
             [ "$code" = 404 ] && { gone=1; break; }
             sleep 10
         done
-        [ "$gone" = 1 ] && pass "closed room $room purged from Synapse (Law 25)" || fail "room $room still in Synapse after 200 s (HTTP $code)"
+        if [ "$gone" = 1 ]; then pass "closed room $room purged from Synapse (Law 25)"
+        else
+            fail "room $room still in Synapse after 200 s (HTTP $code)"
+            # what the bridge said about it (the container is recreated at cleanup, which drops its log)
+            docker logs sb-chat 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -i -E 'purge|admin (call|token|session)|web chat: (could not|room)' \
+                | tail -n 8 | sed 's/^/      bridge: /' >&2
+        fi
     done
     # logout is MAS's job (compatibility API): the admin token stops working at once
     [ -z "$TOKEN" ] || printf 'url = "http://mas:8080/_matrix/client/v3/logout"\nrequest = "POST"\nheader = "Authorization: Bearer %s"\ndata = "{}"\n' "$TOKEN" \
