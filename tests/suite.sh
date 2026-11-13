@@ -52,6 +52,8 @@ WELCOME="Bienvenue sur le clavardage de test sbcomposer, un bénévole va vous r
 MERCI="Merci d'avoir écrit au clavardage de test sbcomposer."
 RESP_A=sbctest-resp-a RESP_B=sbctest-resp-b SBUSER=sbctest-sbuser
 PRIVACY_OFFICER="Responsable test sbcomposer, vie.privee@sbcomposer.invalid"
+LINKED_ORIGIN=https://linked.sbcomposer.invalid
+CC2_TOKEN=""
 NOTIFY="Message de SwitchBoard aux répondants $(rand_hex 4)"
 RESP_PW=$(conf TEST_RESPONDENT_PASSWORD); [ -n "$RESP_PW" ] || { RESP_PW=$(rand_password); env_set "$CONF" TEST_RESPONDENT_PASSWORD "$RESP_PW"; }
 SBUSER_PW=$(conf TEST_SBUSER_PASSWORD); [ -n "$SBUSER_PW" ] || { SBUSER_PW=$(rand_password); env_set "$CONF" TEST_SBUSER_PASSWORD "$SBUSER_PW"; }
@@ -101,6 +103,7 @@ suite_py() { # scenario... (output also kept in $RESULTS/py.log)
         -e RESP_A="$RESP_A" -e RESP_B="$RESP_B" -e RESP_PW -e SBUSER="$SBUSER" -e SBUSER_PW \
         -e CC_TOKEN -e DID="$DID" -e WELCOME="$WELCOME" -e MERCI="$MERCI" -e NONCE="${NONCE:-}" \
         -e PRIVACY_OFFICER="$PRIVACY_OFFICER" -e NOTIFY="$NOTIFY" -e BAN_TEST="$BAN_TEST" -e ADMIN_TOKEN \
+        -e LINKED_ORIGIN="$LINKED_ORIGIN" \
         sbcomposer-sim python3 - "$@" < "$COMPOSER_DIR/tests/suite.py" 2>&1 | tee -a "$RESULTS/py.log"
 }
 ADMIN_TOKEN=$(head -n1 "$D/admin-api-token")
@@ -128,6 +131,9 @@ CC_TOKEN=$(printf '%s' "$OUT" | sed -n 's/.*"vec_answer":\["\([^"]*\)".*/\1/p');
 cleanup() {
     step "cleanup"
     sbchat_api "{\"command\":\"delete_call_center\",\"api_token\":\"$CC_TOKEN\"}" >/dev/null && pass "test call center deleted" || fail "delete_call_center"
+    if [ -n "$CC2_TOKEN" ]; then
+        sbchat_api "{\"command\":\"delete_call_center\",\"api_token\":\"$CC2_TOKEN\"}" >/dev/null && pass "test committee without voip.ms deleted (its website unlinked)" || fail "delete the web-only call center"
+    fi
     if [ -f "$ENVF.sbcomposer-suite" ]; then
         mv "$ENVF.sbcomposer-suite" "$ENVF"; chmod 600 "$ENVF"
         restart_bridge && pass "bridge back to its own settings" || fail "bridge restart after the suite"
@@ -145,6 +151,38 @@ for spec in "newcomerweb|$WELCOME|newcomerweb" "merci|$MERCI|"; do
         "$(conf SB_ADMIN_USER)" "$CC_TOKEN" "$name" "$(json_escape "$text")" "$tags")")
     case "$OUT" in *'"ok":true'*) pass "macro « $name » saved through SwitchBoard and listed back" ;; *) fail "macro $name through SwitchBoard: $OUT" ;; esac
 done
+# A committee without voip.ms (web chat only), as SwitchBoard creates it, with its own website
+REF="switchboard:sbcomposer-suite:$(rand_hex 4)"
+OUT=$(sbchat_api "{\"command\":\"add_new_call_center\",\"voip_ms_username\":\"\",\"voip_ms_api_password\":\"\",\"call_center_did\":\"\",\"privilege_level\":0,\"renew_api_token\":false,\"committee_ref\":\"$REF\"}")
+CC2_TOKEN=$(printf '%s' "$OUT" | sed -n 's/.*"vec_answer":\["\([^"]*\)".*/\1/p')
+[ -n "$CC2_TOKEN" ] && pass "a committee without voip.ms gets its call center (no username, password or DID)" || fail "web-only call center: ${OUT:0:200}"
+OUT=$(sbchat_api "{\"command\":\"add_new_call_center\",\"voip_ms_username\":\"\",\"voip_ms_api_password\":\"\",\"call_center_did\":\"\",\"privilege_level\":0,\"renew_api_token\":false,\"committee_ref\":\"$REF\"}")
+[ "$(printf '%s' "$OUT" | sed -n 's/.*"vec_answer":\["\([^"]*\)".*/\1/p')" = "$CC2_TOKEN" ] && pass "asking again for the same committee gives the same call center" || fail "a second request created another call center"
+OUT=$(sbchat_api "{\"command\":\"change_respondents\",\"api_token\":\"$CC2_TOKEN\",\"respondent\":[\"$RESP_B\"]}" "$CC2_TOKEN")
+case "$OUT" in *'"querystatus":"Success'*) pass "its respondent: B only" ;; *) fail "web-only change_respondents: ${OUT:0:200}" ;; esac
+OUT=$(sb_wire_php "{\"action\":\"pairing\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC2_TOKEN\"}")
+LINK=$(printf '%s' "$OUT" | sed -n 's/.*"string":"\([^"]*\)".*/\1/p' | sed 's#\\/#/#g')
+case "$LINK" in "https://$SBCHAT#"????-????-????) pass "SwitchBoard gives the string to paste in WP Chat ($(printf '%s' "$LINK" | cut -d'#' -f1)#…)" ;; *) fail "SwitchBoard pairing string: ${OUT:0:200}" ;; esac
+CODE=${LINK#*#}
+pair() { # code origin -> HTTP code and body (what the WP Chat plugin's server sends)
+    printf 'url = "https://%s/web/pair"\nheader = "Content-Type: application/json"\ndata = %s\n' "$SBCHAT" "$(curl_quote "{\"code\":\"$1\",\"origin\":\"$2\"}")" \
+        | docker run --rm -i "${NET_ARGS[@]:0:2}" "${CURL_CA[@]}" "$(conf CURL_IMAGE)" -s --max-time 30 -w '\n%{http_code}' -K -
+}
+preflight() { # origin -> the Access-Control-Allow-Origin the bridge answers
+    docker run --rm "${NET_ARGS[@]:0:2}" "${CURL_CA[@]}" "$(conf CURL_IMAGE)" -s -D - -o /dev/null --max-time 20 -X OPTIONS \
+        -H "Origin: $1" -H 'Access-Control-Request-Method: POST' "https://$SBCHAT/web/session" | tr -d '\r' | sed -n 's/^access-control-allow-origin: //Ip'
+}
+[ -z "$(preflight "$LINKED_ORIGIN")" ] && pass "before linking, the website is refused (CORS)" || fail "an unlinked website was accepted"
+OUT=$(pair "$CODE" "http://linked.sbcomposer.invalid")
+[ "$(tail -n1 <<<"$OUT")" = 400 ] && pass "a website without https is refused" || fail "http origin: $OUT"
+OUT=$(pair "$CODE" "$LINKED_ORIGIN")
+case "$OUT" in *'"ok":true'*) pass "the website is linked with the code" ;; *) fail "pairing: $OUT" ;; esac
+OUT=$(pair "$CODE" "https://other.sbcomposer.invalid")
+[ "$(tail -n1 <<<"$OUT")" = 403 ] && pass "the code works only once" || fail "code reused: $OUT"
+[ "$(preflight "$LINKED_ORIGIN")" = "$LINKED_ORIGIN" ] && pass "the linked website is accepted at once (no restart)" || fail "linked website not accepted (CORS)"
+OUT=$(sb_wire_php "{\"action\":\"sites\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC2_TOKEN\"}")
+case "$OUT" in *"linked.sbcomposer.invalid"*) pass "SwitchBoard lists the linked website" ;; *) fail "SwitchBoard sites: ${OUT:0:200}" ;; esac
+
 CC_ID=$(sqlite_bridge "SELECT id_call_center FROM call_center WHERE call_center_did=$DID ORDER BY id_call_center DESC LIMIT 1" 2>/dev/null)
 [[ "$CC_ID" =~ ^[0-9]+$ ]] || { fail "test call center id not found"; exit 1; }
 cp -p "$ENVF" "$ENVF.sbcomposer-suite"
@@ -160,9 +198,9 @@ restart_bridge && pass "bridge restarted: web chat on call center $CC_ID, outgoi
 SENT_BEFORE=$(queued)
 
 # ------------------------------------------------------------------------------------------ conversations
-step "accounts, webchat, sms, devices"
+step "accounts, webchat, sms, devices, linked website"
 # The scenarios run in the background; at their WAIT lines this script checks the bridge's database
-suite_py accounts webchat sms devices > "$RESULTS/main.log" 2>&1 &
+suite_py accounts webchat sms devices linked > "$RESULTS/main.log" 2>&1 &
 PYPID=$!
 while kill -0 "$PYPID" 2>/dev/null; do
     if grep -q '^WAIT sms_queue' "$RESULTS/main.log" && [ ! -e "$SYNC/sms_queue" ]; then
@@ -181,6 +219,22 @@ while kill -0 "$PYPID" 2>/dev/null; do
 done
 wait "$PYPID"
 count < <(grep -E '^(PASS|FAIL)' "$RESULTS/main.log")
+
+if [ -n "$CC2_TOKEN" ]; then
+    step "linked websites: removal, and the real WP Chat plugin"
+    OUT=$(sb_wire_php "{\"action\":\"unlink\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC2_TOKEN\",\"origin\":\"$LINKED_ORIGIN\"}")
+    case "$OUT" in *'"ok":true'*) pass "SwitchBoard removes the linked website" ;; *) fail "SwitchBoard unlink: $OUT" ;; esac
+    [ -z "$(preflight "$LINKED_ORIGIN")" ] && pass "a removed website is refused at once" || fail "a removed website is still accepted"
+    if [ -n "$(conf WP_HOST)" ] && container_running sbwp; then
+        LINK=$(sb_wire_php "{\"action\":\"pairing\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC2_TOKEN\"}" | sed -n 's/.*"string":"\([^"]*\)".*/\1/p' | sed 's#\\/#/#g')
+        OUT=$(docker run --rm --user 33:33 --volumes-from sbwp --network sbwp_internal -e WORDPRESS_DB_HOST=sbwp-db -e WORDPRESS_DB_USER=wordpress \
+            -e WORDPRESS_DB_NAME=wordpress -e WORDPRESS_DB_PASSWORD="$(conf WP_DB_PASSWORD)" -e LINK="$LINK" "$(conf WORDPRESS_CLI_IMAGE)" \
+            wp eval '$r = wp_chat_link_with( getenv( "LINK" ) ); echo $r[0] ? "LINKED " : "FAILED "; echo $r[1];' 2>/dev/null)
+        case "$OUT" in LINKED*) pass "WP Chat links its website with the string (Settings > WP Chat > Link)" ;; *) fail "WP Chat link: ${OUT:0:200}" ;; esac
+        OUT=$(sb_wire_php "{\"action\":\"sites\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC2_TOKEN\"}")
+        case "$OUT" in *"$(conf WP_HOST)"*) pass "SwitchBoard lists the WordPress site as linked" ;; *) fail "WordPress site not listed: ${OUT:0:200}" ;; esac
+    fi
+fi
 
 # ------------------------------------------------------------------------------------------ team
 if ! skip team; then

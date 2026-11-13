@@ -100,9 +100,20 @@ The suite covers:
 - **outside network (`--outside HOST`):** DNS, certificates, redirects, discovery, federation, what must NOT be
   exposed, CORS, and a web chat from there answered by a respondent on the server.
 
+## Websites of several committees, committees without voip.ms
+
+A committee links its own website without anyone touching the server. In SwitchBoard, the committee's
+*SwitchBoard Chat* page, *Link a website*, shows a one-time string (valid 30 minutes). Paste it in WordPress:
+*Settings > WP Chat > Link this website to a committee*. The bridge then accepts that website, and its chats go
+to that committee's respondents, so many committees can share one installation. A committee that only uses the
+web chat needs no voip.ms account: leave the three voip.ms fields empty in SwitchBoard and request its SBChat
+token as usual. (This needs SwitchBoard, SwitchBoardChat and WP Chat versions with these features.)
+
 ## Tests
 
 ```sh
+tests/run-linux.sh --distros debian --errors       # user errors: each must stop with a clear message
+tests/run-linux.sh --distros debian --local-repos DIR --quick   # unpushed changes in DIR/{sb,sbchat,wp_chat}
 tests/run-linux.sh --distros "debian ubuntu fedora arch alpine"
 tests/run-windows.sh [--pc NAME] [--relay HOST]
 ```

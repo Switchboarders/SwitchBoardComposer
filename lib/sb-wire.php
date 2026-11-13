@@ -117,6 +117,24 @@ if ($cfg['action'] === 'mail_oauth') {
 	exit(0);
 }
 
+// pairing / sites / unlink: SwitchBoard's "Linked websites" section (web chat) for a call center token
+if (in_array($cfg['action'], ['pairing', 'sites', 'unlink'], true)) {
+	$info = $db->getSbchatinfobyId($id) ?: [];
+	$client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');
+	if ($cfg['action'] === 'pairing') {
+		$p = $client->create_web_pairing($cfg['token']);
+		$r = ['ok' => !empty($p['code']), 'string' => !empty($p['code']) ? $client->chaine_jumelage($p) : null];
+	} elseif ($cfg['action'] === 'sites') {
+		$list = $client->list_web_sites($cfg['token']);
+		$r = ['ok' => is_array($list), 'sites' => array_map(fn($x) => $x['origin'], $list ?? [])];
+	} else {
+		$r = ['ok' => $client->remove_web_site($cfg['token'], $cfg['origin'])];
+	}
+	ob_end_clean();
+	out($r);
+	exit(0);
+}
+
 // status: is the wiring there, and does SwitchBoard reach SBChat and MAS with it?
 $info = $db->getSbchatinfobyId($id) ?: [];
 $client = new ClientSwitchBoardChat($info['sbchatserveraddress'] ?? '');

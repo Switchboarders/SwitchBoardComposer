@@ -24,7 +24,7 @@ OPT_DOMAIN="${SBC_DOMAIN:-}" OPT_MATRIX_HOST="" OPT_SB_HOST="" OPT_SBCHAT_HOST="
 OPT_EMAIL="${SBC_EMAIL:-}" OPT_TZ="${SBC_TZ:-}" OPT_TLS="${SBC_TLS:-}"
 OPT_SB_REF="" OPT_SBCHAT_REF="" OPT_SB_REPO="" OPT_SBCHAT_REPO=""
 OPT_WEB_ORIGINS="" OPT_WEB_CALL_CENTER="" OPT_HTTP_PORT="" OPT_HTTPS_PORT="" OPT_FRONT=""
-OPT_WP_HOST="" OPT_WP_TITLE="" OPT_WP_PRIVACY=""
+OPT_WP_HOST="" OPT_WP_TITLE="" OPT_WP_PRIVACY="" OPT_WPCHAT_REPO="" OPT_WPCHAT_REF=""
 INTERACTIVE=1 SKIP_VERIFY=0 NO_BACKUP=0
 
 usage() {
@@ -52,6 +52,7 @@ Options (first install; later runs reuse the saved answers unless given again):
                            (https://github.com/Switchboarders/wp_chat); its address is allowed for web chats
   --wordpress-title TEXT   that site's title (default "Clavardage")
   --privacy-contact TEXT   privacy officer shown by the widget (default: the --email address)
+  --wpchat-repo URL / --wpchat-ref REF   where WP Chat comes from (default: Switchboarders on GitHub, main)
   --no-backup              update without the backup step (tests only)
   --no-verify              skip the final verification
   --non-interactive        never prompt (default when stdin is not a terminal)
@@ -81,6 +82,8 @@ while [ $# -gt 0 ]; do
         --wordpress-host) OPT_WP_HOST=$(printf '%s' "${2-}" | tr 'A-Z' 'a-z'); shift 2 ;;
         --wordpress-title) OPT_WP_TITLE=${2-}; shift 2 ;;
         --privacy-contact) OPT_WP_PRIVACY=${2-}; shift 2 ;;
+        --wpchat-repo) OPT_WPCHAT_REPO=${2-}; shift 2 ;;
+        --wpchat-ref) OPT_WPCHAT_REF=${2-}; shift 2 ;;
         --no-backup) NO_BACKUP=1; shift ;;
         --no-verify) SKIP_VERIFY=1; shift ;;
         --non-interactive) INTERACTIVE=0; shift ;;
@@ -109,12 +112,54 @@ UPDATE=0
 [ -n "$(env_get "$CONF" MATRIX_HOST)" ] && UPDATE=1
 say "$( [ "$UPDATE" = 1 ] && echo "Existing installation in $PREFIX: updating" || echo "New installation in $PREFIX")"
 
+# One run at a time (a second one would rebuild and restart the same containers in the middle of the first)
+LOCK="$PREFIX/.install.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+    other=$(cat "$LOCK/pid" 2>/dev/null || true)
+    if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+        die "$EXIT_ARGS" "install.sh is already running for $PREFIX (process $other): wait for it to finish"
+    fi
+    say "Removing the lock of an earlier run that was interrupted"
+    rm -rf "$LOCK"; mkdir "$LOCK" || die "$EXIT_ARGS" "cannot create $LOCK"
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK" "${CONF_NEW:-}"' EXIT
+
+# The containers have fixed names: they belong to exactly one installation per Docker host
+for c in synapse mas masdb sb-chat sb_php-fpm; do
+    dir=$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$c" 2>/dev/null || true)
+    [ -n "$dir" ] || continue
+    case "$(winpath "$dir")/" in
+        "$PREFIX"/*) ;;
+        *) die "$EXIT_ARGS" "the container $c belongs to another installation ($dir): this Docker host runs one installation; use --prefix ${dir%/*} to update that one" ;;
+    esac
+done
+if [ "$UPDATE" = 0 ]; then
+    # composer.env lost while the data still exists: new secrets would lock MAS out of its database and make
+    # SwitchBoard's encrypted secrets unreadable
+    for d in "$PREFIX/matrix/postgres" "$PREFIX/matrix/synapse" "$PREFIX/switchboard/Docker/db_data" "$PREFIX/switchboardchat/sb-chat"; do
+        if [ -d "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+            die "$EXIT_ARGS" "$PREFIX already holds an installation's data ($d) but $CONF is missing or empty. Restore composer.env from a backup ($PREFIX/backups/*/composer.env) instead of starting over: new secrets would lock you out of the existing data"
+        fi
+    done
+fi
+
 # ---------------------------------------------------------------------------------------- settings
+# First install: the answers go to a temporary file that becomes composer.env only once every check has
+# passed (a refused option must not leave a half-configured installation behind)
+CONF_NEW=""
+if [ "$UPDATE" = 0 ]; then
+    CONF_FINAL=$CONF; CONF_NEW="$CONF.new"; rm -f "$CONF_NEW"
+    [ -f "$CONF" ] && cp -p "$CONF" "$CONF_NEW"   # keeps pre-seeded values (e.g. MAIL_OAUTH_*)
+    CONF=$CONF_NEW
+fi
 ask() { # var text
     [ "$INTERACTIVE" = 1 ] || return 0
     local v; read -r -p "$2: " v; printf -v "$1" '%s' "$v"
 }
-host_ok() { [[ "$1" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; }
+host_ok() { # a DNS name with at least one dot, not an IP address
+    [[ "$1" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] && ! [[ "$1" =~ ^[0-9.]+$ ]]
+}
 
 [ -n "$OPT_DOMAIN" ] || [ -n "$(conf MATRIX_HOST)" ] || ask OPT_DOMAIN "Base domain (matrix.<domain>, sb.<domain>, sbchat.<domain>)"
 OPT_DOMAIN=$(printf '%s' "$OPT_DOMAIN" | tr 'A-Z' 'a-z')
@@ -165,8 +210,12 @@ env_set "$CONF" TZ "$OPT_TZ"
 set_or_default() { # key option default
     if [ -n "$2" ]; then env_set "$CONF" "$1" "$2"; else env_default "$CONF" "$1" "$3"; fi
 }
+for p in "$OPT_HTTP_PORT" "$OPT_HTTPS_PORT"; do
+    [ -z "$p" ] || { [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; } || die "$EXIT_ARGS" "--http-port/--https-port: « $p » is not a port number (1-65535)"
+done
 set_or_default HTTP_PORT "$OPT_HTTP_PORT" 80
 set_or_default HTTPS_PORT "$OPT_HTTPS_PORT" 443
+[ "$(conf HTTP_PORT)" != "$(conf HTTPS_PORT)" ] || die "$EXIT_ARGS" "--http-port and --https-port must differ"
 set_or_default SB_REPO "$OPT_SB_REPO" https://github.com/Switchboarders/SwitchBoard.git
 set_or_default SB_REF "$OPT_SB_REF" main
 set_or_default SBCHAT_REPO "$OPT_SBCHAT_REPO" https://github.com/Switchboarders/SwitchBoardChat.git
@@ -183,8 +232,8 @@ fi
 if [ -n "$(conf WP_HOST)" ]; then
     set_or_default WP_TITLE "$OPT_WP_TITLE" "Clavardage"
     set_or_default WP_PRIVACY_OFFICER "$OPT_WP_PRIVACY" "$(conf EMAIL)"
-    env_default "$CONF" WPCHAT_REPO https://github.com/Switchboarders/wp_chat.git
-    env_default "$CONF" WPCHAT_REF main
+    set_or_default WPCHAT_REPO "$OPT_WPCHAT_REPO" https://github.com/Switchboarders/wp_chat.git
+    set_or_default WPCHAT_REF "$OPT_WPCHAT_REF" main
     env_default "$CONF" WP_ADMIN_PASSWORD "$(rand_password)"
     env_default "$CONF" WP_DB_PASSWORD "$(rand_hex 20)"
     env_default "$CONF" WP_DB_ROOT_PASSWORD "$(rand_hex 20)"
@@ -194,6 +243,11 @@ if [ -n "$(conf WP_HOST)" ]; then
         *) env_set "$CONF" WEB_ORIGINS "$(conf WEB_ORIGINS | sed 's/[^,]$/&,/')https://$(conf WP_HOST)" ;;
     esac
 fi
+
+# Every name is a different site
+names="$(conf MATRIX_HOST) $(conf SB_HOST) $(conf SBCHAT_HOST) $(conf WP_HOST)"
+dup=$(printf '%s\n' $names | sort | uniq -d | head -n1)
+[ -z "$dup" ] || die "$EXIT_ARGS" "the host name $dup is used twice: Matrix, SwitchBoard, SBChat (and WordPress) need one name each"
 
 # Generated once, never rotated by a re-run (changing them would lock out accounts or break sessions)
 env_default "$CONF" BOT_LOCALPART sms
@@ -210,6 +264,12 @@ env_default "$CONF" SYNAPSE_REGISTRATION_SECRET "$(rand_hex 32)"
 env_default "$CONF" SYNAPSE_MACAROON_SECRET "$(rand_hex 32)"
 env_default "$CONF" SYNAPSE_FORM_SECRET "$(rand_hex 32)"
 chmod 600 "$CONF"
+
+# Ports of the front proxy: checked before anything is installed or started
+ports_free
+if [ -n "$CONF_NEW" ]; then
+    mv "$CONF_NEW" "$CONF_FINAL"; chmod 600 "$CONF_FINAL"; CONF=$CONF_FINAL; CONF_NEW=""
+fi
 
 # ---------------------------------------------------------------------------------------- backup
 if [ "$UPDATE" = 1 ] && [ "$NO_BACKUP" = 0 ]; then

@@ -311,6 +311,22 @@ tls_letsencrypt() {
     env_set "$CONF" LE_NAMES "$names"
 }
 
+# Before nginx first takes its ports: are they free? (a clear message instead of Docker's, half-way through)
+ports_free() {
+    container_running synapse-nginx && return 0
+    local bind p err
+    bind=$( [ "$(conf FRONT)" = proxy ] && echo 127.0.0.1 || echo 0.0.0.0 )
+    for p in "$(conf HTTP_PORT)" "$(conf HTTPS_PORT)"; do
+        if ! err=$(docker run --rm --entrypoint true -p "$bind:$p:80" "$(conf NGINX_IMAGE)" 2>&1); then
+            case "$err" in
+                *"already allocated"*|*"address already in use"*|*"bind"*)
+                    die "$EXIT_START" "port $p is already used on this machine (another web server or reverse proxy?). Free it, or use --behind-proxy if a reverse proxy (e.g. Nginx Proxy Manager) owns 80/443, or choose --http-port/--https-port" ;;
+                *) die "$EXIT_START" "cannot check port $p: $(printf '%s' "$err" | tail -n1)" ;;
+            esac
+        fi
+    done
+}
+
 matrix_up() {
     step "Matrix: Synapse $(conf SYNAPSE_IMAGE | sed 's/.*://'), MAS $(conf MAS_IMAGE | sed 's/.*://')"
     matrix_prepare_dirs
@@ -322,6 +338,7 @@ matrix_up() {
     mas_render
     nginx_render
     mx_compose pull -q >&2 2>/dev/null || true
+    ports_free
     mx_compose up -d --remove-orphans >&2 || die "$EXIT_START" "docker compose up (matrix) failed"
     # nginx re-reads its configuration (it may have been running with the primer or an older one)
     docker exec synapse-nginx nginx -s reload >/dev/null 2>&1 || true

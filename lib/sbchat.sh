@@ -50,6 +50,8 @@ sbchat_up() {
         --docker-network web
         --trusted-proxies "$subnet"
         --output-json "$tmp/result.json")
+    # newer SBChat: the public web chat address goes into the string SwitchBoard shows ("Link a website")
+    grep -q -- '--web-public-url' "$d/scripts/install.sh" && args+=(--web-public-url "https://$(conf SBCHAT_HOST)")
     [ -z "$(conf WEB_ORIGINS)" ] || args+=(--web-origins "$(conf WEB_ORIGINS)")
     [ -z "$(conf WEB_CALL_CENTER_ID)" ] || args+=(--web-call-center "$(conf WEB_CALL_CENTER_ID)")
     "$d/scripts/install.sh" "${args[@]}" </dev/null >&2 || rc=$?

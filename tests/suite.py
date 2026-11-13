@@ -331,8 +331,31 @@ def sc_team():
     check("a message from SwitchBoard reaches respondent B", b.wait_message(note, mb_, 120) is not None)
 
 
+def sc_linked():
+    """A website linked with a pairing code (no WEB_ALLOWED_ORIGINS, no WEB_CALL_CENTER_ID for it) reaches
+    the respondents of ITS committee only: here a committee without voip.ms whose only respondent is B."""
+    print("== Website linked to a committee without voip.ms", flush=True)
+    a, b = sim("a"), sim("b")
+    nonce = uuid.uuid4().hex[:8]
+    ma, mb = a.mark(), b.mark()
+    v = lib.Visitor(origin=E["LINKED_ORIGIN"]).start()
+    check("a visitor of the linked website opens a chat (the server accepts the website)", v.token is not None)
+    v.open_stream()
+    status, body = v.say(f"Bonjour du site relié {nonce}")
+    check("the visitor's message is accepted", status == 200, f"{status} {body}")
+    room = b.wait_room(mb, 90)
+    check("the chat goes to the linked committee's respondent (B)", room is not None)
+    check("respondent B reads it", b.wait_message(nonce, mb, 90) is not None)
+    check("respondent A (another committee) does not get this chat", a.wait_message(nonce, ma, 15) is None)
+    if room:
+        say(b, room, f"Réponse du comité relié {nonce}")
+        check("the visitor receives the linked committee's answer", v.wait_text(f"comité relié {nonce}", 60) is not None, str(v.texts()))
+    v.close_stream()
+    v.end()
+
+
 SCENARIOS = {"accounts": sc_accounts, "webchat": sc_webchat, "sms": sc_sms, "responder": sc_responder,
-             "devices": sc_devices, "team": sc_team}
+             "devices": sc_devices, "team": sc_team, "linked": sc_linked}
 try:
     for name in sys.argv[1:]:
         try:

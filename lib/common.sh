@@ -23,16 +23,35 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$EXIT_DEPS" "missing dependency
 # Same semantics as SwitchBoardChat's scripts/install.sh: KEY=VALUE lines, first match wins.
 env_get() { # file key
     [ -f "$1" ] || return 0
-    awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$1"
+    # Tolerates a file edited by hand: Windows line endings, a byte-order mark, spaces around "=",
+    # and a value in matching quotes
+    awk -v k="$2" '
+        NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+        { sub(/\r$/, "") }
+        {
+            line = $0; sub(/^[ \t]+/, "", line)
+            if (index(line, k) != 1) next
+            rest = substr(line, length(k) + 1); sub(/^[ \t]*/, "", rest)
+            if (substr(rest, 1, 1) != "=") next
+            v = substr(rest, 2); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+            if (v ~ /^".*"$/ || v ~ /^\x27.*\x27$/) v = substr(v, 2, length(v) - 2)
+            print v; exit
+        }' "$1"
 }
 env_set() { # file key value
     local file=$1 key=$2 value=$3 tmp
     [ -f "$file" ] || { ( umask 077; : > "$file" ); }
     tmp=$(mktemp "$file.XXXXXX")
     awk -v k="$key" -v v="$value" '
+        function is_key(line) {   # same rules as env_get: BOM, CR, spaces around "="
+            sub(/^\xef\xbb\xbf/, "", line); sub(/\r$/, "", line); sub(/^[ \t]+/, "", line)
+            if (index(line, k) != 1) return 0
+            line = substr(line, length(k) + 1); sub(/^[ \t]*/, "", line)
+            return substr(line, 1, 1) == "="
+        }
         BEGIN { done = 0 }
-        !done && index($0, k "=") == 1 { print k "=" v; done = 1; next }
-        { print }
+        !done && is_key($0) { print k "=" v; done = 1; next }
+        { sub(/\r$/, ""); print }
         END { if (!done) print k "=" v }
     ' "$file" > "$tmp"
     chmod 600 "$tmp"
@@ -41,7 +60,8 @@ env_set() { # file key value
 env_unset() { # file key: removes KEY= lines
     [ -f "$1" ] || return 0
     local tmp; tmp=$(mktemp "$1.XXXXXX")
-    awk -v k="$2" 'index($0, k "=") != 1' "$1" > "$tmp"; chmod 600 "$tmp"; mv "$tmp" "$1"
+    awk -v k="$2" '{ l = $0; sub(/^[ \t]+/, "", l) } !(index(l, k) == 1 && substr(l, length(k) + 1) ~ /^[ \t]*=/)' "$1" > "$tmp"
+    chmod 600 "$tmp"; mv "$tmp" "$1"
 }
 # Sets KEY only when it is empty (generated secrets are created once and never rotated)
 env_default() { # file key value

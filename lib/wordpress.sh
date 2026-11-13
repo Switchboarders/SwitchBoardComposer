@@ -46,6 +46,16 @@ EOF
         say "WordPress installed (admin: see credentials.txt)"
     fi
 
+    # Self-signed mode: WordPress checks certificates with its own list; give it the local CA too, so the plugin
+    # can call the chat server (linking with a code from SwitchBoard)
+    if [ "$(conf TLS_MODE)" = selfsigned ] && [ -f "$(SBCHAT_DIR)/sbcomposer-ca-bundle.pem" ]; then
+        docker exec -u 33:33 sbwp mkdir -p /var/www/html/wp-content/mu-plugins
+        docker cp "$(SBCHAT_DIR)/sbcomposer-ca-bundle.pem" sbwp:/var/www/html/wp-content/mu-plugins/sbcomposer-ca-bundle.pem
+        printf '%s\n' '<?php' '// sbcomposer (self-signed mode): trust the local CA of this installation for outgoing HTTPS' \
+            "add_filter( 'http_request_args', function ( \$a ) { \$a['sslcertificates'] = __DIR__ . '/sbcomposer-ca-bundle.pem'; return \$a; } );" \
+            | docker exec -i -u 33:33 sbwp sh -c 'cat > /var/www/html/wp-content/mu-plugins/sbcomposer-ca.php'
+    fi
+
     # The plugin, from its repository (public, GPL-2.0-or-later), refreshed on every run
     if [ -d "$(WPPLUGIN_DIR)/.git" ]; then
         git -C "$(WPPLUGIN_DIR)" fetch -q origin "$(conf WPCHAT_REF)" && git -C "$(WPPLUGIN_DIR)" checkout -q -B "$(conf WPCHAT_REF)" FETCH_HEAD \

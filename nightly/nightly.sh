@@ -58,6 +58,8 @@ else
     run "debian: install + update on main" --distros debian
 fi
 run "$EXTRA: install + update on main" --distros "$EXTRA"
+# Sundays: the user-error scenario too (bad options, missing Docker/git, busy ports, lost composer.env, ...)
+[ "$(date +%u)" = 7 ] && run "debian: user errors" --distros debian --errors
 
 # 3. The live installation of this machine (LIVE_PREFIX in nightly.env): the real update path on real data,
 #    then the complete functional suite against it, through its public names
