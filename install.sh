@@ -203,8 +203,34 @@ if [ "$UPDATE" = 1 ] && [ "$NO_BACKUP" = 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------------------- sources
-fetch_repo() { # dir url ref (branch, tag or commit)
+# Fixes the composer needs that are not (yet) in a repository: patches/<repo>/*.patch, applied after
+# each checkout and removed before the next update (so the "local modifications" check and the
+# fast-forward still see a clean tree). A patch that no longer applies (fixed upstream, or the file
+# changed) is skipped with a note.
+patches_of() { ls "$COMPOSER_DIR/patches/$1/"*.patch 2>/dev/null || true; }
+unapply_patches() { # dir name
+    local p
+    for p in $(patches_of "$2"); do
+        git -C "$1" apply -R --check "$p" 2>/dev/null && git -C "$1" apply -R "$p"
+    done
+    return 0
+}
+apply_patches() { # dir name
+    local p
+    for p in $(patches_of "$2"); do
+        if git -C "$1" apply --check "$p" 2>/dev/null; then
+            ( umask 022; git -C "$1" apply "$p" ) && say "Applied patch $(basename "$p")"
+        elif git -C "$1" apply -R --check "$p" 2>/dev/null; then
+            :   # already applied
+        else
+            say "Note: patch $(basename "$p") no longer applies (fixed upstream?): skipped"
+        fi
+    done
+}
+
+fetch_repo() { # dir url ref (branch, tag or commit) name
     local dir=$1 url=$2 ref=$3
+    [ -d "$dir/.git" ] && unapply_patches "$dir" "$4"
     if [ ! -d "$dir/.git" ]; then
         # public source code: normal permissions (containers read parts of it as non-root users)
         ( umask 022; git clone -q -c core.autocrlf=false -c core.eol=lf "$url" "$dir" ) || die "$EXIT_START" "git clone $url failed"
@@ -225,10 +251,11 @@ fetch_repo() { # dir url ref (branch, tag or commit)
     else
         die "$EXIT_ARGS" "$ref is not a branch, tag or commit of $url"
     fi
+    apply_patches "$dir" "$4"
 }
 step "Fetching SwitchBoard ($(conf SB_REF)) and SwitchBoardChat ($(conf SBCHAT_REF))"
-fetch_repo "$(SB_DIR)" "$(conf SB_REPO)" "$(conf SB_REF)"
-fetch_repo "$(SBCHAT_DIR)" "$(conf SBCHAT_REPO)" "$(conf SBCHAT_REF)"
+fetch_repo "$(SB_DIR)" "$(conf SB_REPO)" "$(conf SB_REF)" switchboard
+fetch_repo "$(SBCHAT_DIR)" "$(conf SBCHAT_REPO)" "$(conf SBCHAT_REF)" switchboardchat
 
 # ---------------------------------------------------------------------------------------- install
 docker network inspect web >/dev/null 2>&1 || docker network create web >/dev/null
