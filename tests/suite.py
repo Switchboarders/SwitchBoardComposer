@@ -341,7 +341,12 @@ def sc_linked():
     v = lib.Visitor(origin=E["LINKED_ORIGIN"]).start()
     check("a visitor of the linked website opens a chat (the server accepts the website)", v.token is not None)
     v.open_stream()
-    status, body = v.say(f"Bonjour du site relié {nonce}")
+    try:
+        status, body = v.say(f"Bonjour du site relié {nonce}")
+    except TimeoutError:
+        # the bridge was busy (the previous scenarios leave several devices syncing): once more
+        print("(first message timed out: retrying once)", flush=True)
+        status, body = v.say(f"Bonjour du site relié {nonce}")
     check("the visitor's message is accepted", status == 200, f"{status} {body}")
     room = b.wait_room(mb, 90)
     check("the chat goes to the linked committee's respondent (B)", room is not None)

@@ -219,6 +219,21 @@ mas_user_id() { # token localpart -> MAS user id (ULID), empty if absent
     mas_api "$1" GET "users/by-username/$2" | sed -n 's/.*"data":{"type":"user","id":"\([0-9A-Z]*\)".*/\1/p'
 }
 
+# Ends every active session (device) of a user: tests log their accounts in as new devices on every run
+mas_finish_sessions() { # localpart -> number of sessions ended
+    local token id ids n=0 s
+    token=$(mas_admin_token); [ -n "$token" ] || return 0
+    id=$(mas_user_id "$token" "$1"); [ -n "$id" ] || { echo 0; return 0; }
+    for kind in compat-sessions oauth2-sessions; do
+        ids=$(mas_api "$token" GET "$kind?filter%5Buser%5D=$id&filter%5Bstatus%5D=active&page%5Bfirst%5D=100" \
+            | grep -o '"type":"[a-z0-9-]*","id":"[0-9A-Z]*"' | sed 's/.*"id":"//; s/"$//')
+        for s in $ids; do
+            mas_api "$token" POST "$kind/$s/finish" '{}' >/dev/null && n=$((n + 1))
+        done
+    done
+    echo "$n"
+}
+
 # Creates the user if missing (password set on creation only, never reset) and makes it an admin.
 mas_ensure_user() { # localpart password admin(0|1)
     local user=$1 pass=$2 admin=$3 token id out

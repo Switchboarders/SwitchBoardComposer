@@ -121,6 +121,10 @@ step "setup"
 docker build -q -t sbcomposer-sim -f "$COMPOSER_DIR/tests/sim.Dockerfile" "$D/tests/e2e" >/dev/null \
     && pass "respondent simulator built (SwitchBoardChat tests/e2e/respondent-sim)" || { fail "respondent simulator build"; exit 1; }
 mas_ensure_user "$RESP_A" "$RESP_PW" 0 && mas_ensure_user "$RESP_B" "$RESP_PW" 0 && pass "respondent accounts in MAS"
+# Each run logs the test respondents in as new devices: end the old sessions first (a respondent with dozens
+# of devices makes the first message of every new chat slower for the bridge)
+ended=$(( $(mas_finish_sessions "$RESP_A") + $(mas_finish_sessions "$RESP_B") + $(mas_finish_sessions "$SBUSER") ))
+pass "old sessions of the test accounts ended ($ended)"
 OUT=$(sb_wire_php "{\"action\":\"mas_user\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"username\":\"$SBUSER\",\"password\":\"$SBUSER_PW\"}")
 case "$OUT" in *'"ok":true'*) pass "SwitchBoard creates a Matrix account through MAS and sets its password ($OUT)" ;; *) fail "SwitchBoard → MAS account: $OUT" ;; esac
 
@@ -130,6 +134,8 @@ CC_TOKEN=$(printf '%s' "$OUT" | sed -n 's/.*"vec_answer":\["\([^"]*\)".*/\1/p');
 
 cleanup() {
     step "cleanup"
+    # the bridge's warnings and errors of the test (it never logs message bodies), before it is recreated
+    docker logs sb-chat 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E ' (WARN|ERROR) ' | grep -v 'backup key was found' > "$RESULTS/bridge-warnings.log" || true
     sbchat_api "{\"command\":\"delete_call_center\",\"api_token\":\"$CC_TOKEN\"}" >/dev/null && pass "test call center deleted" || fail "delete_call_center"
     if [ -n "$CC2_TOKEN" ]; then
         sbchat_api "{\"command\":\"delete_call_center\",\"api_token\":\"$CC2_TOKEN\"}" >/dev/null && pass "test committee without voip.ms deleted (its website unlinked)" || fail "delete the web-only call center"
@@ -200,7 +206,8 @@ SENT_BEFORE=$(queued)
 # ------------------------------------------------------------------------------------------ conversations
 step "accounts, webchat, sms, devices, linked website"
 # The scenarios run in the background; at their WAIT lines this script checks the bridge's database
-suite_py accounts webchat sms devices linked > "$RESULTS/main.log" 2>&1 &
+# (devices last: its ban test blocks the test visitors' address for a moment)
+suite_py accounts webchat sms linked devices > "$RESULTS/main.log" 2>&1 &
 PYPID=$!
 while kill -0 "$PYPID" 2>/dev/null; do
     if grep -q '^WAIT sms_queue' "$RESULTS/main.log" && [ ! -e "$SYNC/sms_queue" ]; then
@@ -227,7 +234,8 @@ if [ -n "$CC2_TOKEN" ]; then
     [ -z "$(preflight "$LINKED_ORIGIN")" ] && pass "a removed website is refused at once" || fail "a removed website is still accepted"
     if [ -n "$(conf WP_HOST)" ] && container_running sbwp; then
         LINK=$(sb_wire_php "{\"action\":\"pairing\",\"admin_username\":\"$(conf SB_ADMIN_USER)\",\"token\":\"$CC2_TOKEN\"}" | sed -n 's/.*"string":"\([^"]*\)".*/\1/p' | sed 's#\\/#/#g')
-        OUT=$(docker run --rm --user 33:33 --volumes-from sbwp --network sbwp_internal -e WORDPRESS_DB_HOST=sbwp-db -e WORDPRESS_DB_USER=wordpress \
+        # in WordPress's own network namespace (its private network and "web"), as the plugin itself runs
+        OUT=$(docker run --rm --user 33:33 --volumes-from sbwp --network container:sbwp -e WORDPRESS_DB_HOST=sbwp-db -e WORDPRESS_DB_USER=wordpress \
             -e WORDPRESS_DB_NAME=wordpress -e WORDPRESS_DB_PASSWORD="$(conf WP_DB_PASSWORD)" -e LINK="$LINK" "$(conf WORDPRESS_CLI_IMAGE)" \
             wp eval '$r = wp_chat_link_with( getenv( "LINK" ) ); echo $r[0] ? "LINKED " : "FAILED "; echo $r[1];' 2>/dev/null)
         case "$OUT" in LINKED*) pass "WP Chat links its website with the string (Settings > WP Chat > Link)" ;; *) fail "WP Chat link: ${OUT:0:200}" ;; esac

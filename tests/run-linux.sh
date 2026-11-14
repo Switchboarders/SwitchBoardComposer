@@ -178,9 +178,9 @@ scenario_errors() {
         "sleep 300 & mkdir -p $P/.install.lock && echo \$! > $P/.install.lock/pid && $I --prefix $P; rc=\$?; kill %1; rm -rf $P/.install.lock; exit \$rc"
     expect 2 'belongs to another installation' "a second installation in another folder is refused" \
         "$I --prefix /opt/second --domain two.test --tls selfsigned"
-    msh "echo '# local edit' >> $P/switchboardchat/README.md"
+    msh "echo '# local edit' >> $P/switchboardchat/scripts/install.sh"
     expect 4 'local modifications' "local changes in a checkout stop the update (nothing lost)" "$I --prefix $P --no-verify"
-    msh "git -C $P/switchboardchat checkout -- README.md"
+    msh "git -C $P/switchboardchat checkout -- scripts/install.sh"
     msh "mv $P/composer.env $P/composer.env.away"
     expect 2 'Restore composer.env' "a lost composer.env is explained (no new secrets over old data)" "$I --prefix $P --domain ok.test --tls selfsigned"
     msh "mv $P/composer.env.away $P/composer.env"
@@ -194,7 +194,8 @@ scenario_errors() {
     [ "$before" = "$after" ] && pass "  … with the same secrets" || fail "  … but a secret changed"
     # interrupted update (Ctrl-C half-way), then the same command again
     docker exec -d "$MACHINE" sh -c "cd /opt/sbcomposer && ./install.sh --non-interactive --prefix $P --no-verify > /tmp/int.log 2>&1"
-    msh "sleep 45; pkill -INT -f 'install.sh --non-interactive --prefix $P'; sleep 5; true"
+    # Ctrl-C reaches the whole process group (install.sh and the docker build it is waiting for); then wait for it
+    msh "sleep 45; pid=\$(pgrep -o -f 'install.sh --non-interactive --prefix $P'); [ -n \"\$pid\" ] && kill -INT -- -\$(ps -o pgid= \$pid | tr -d ' ') 2>/dev/null; for i in \$(seq 1 300); do pgrep -f 'install.sh --non-interactive --prefix $P' >/dev/null || break; sleep 2; done; true"
     if msh "$I --prefix $P" > "$RESULTS/$DISTRO/errors-resume.log" 2>&1; then
         pass "after an interrupted update, running it again completes (verify passes)"
     else fail "re-run after an interrupted update (see errors-resume.log)"; fi
@@ -230,6 +231,7 @@ run_distro() {
         for r in sb sbchat wp_chat; do
             tar -C "$LOCAL_REPOS" -cf - "$r" | docker exec -i "$MACHINE" tar -xf - -C /opt/repos
         done
+        msh "chown -R root:root /opt/repos"   # else git refuses them ("dubious ownership")
         repo_args="--sb-repo /opt/repos/sb --sbchat-repo /opt/repos/sbchat --wpchat-repo /opt/repos/wp_chat"
     fi
     local from_args="" to_args="--sb-ref $TO_SB --sbchat-ref $TO_SBCHAT"
