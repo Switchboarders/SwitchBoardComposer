@@ -45,6 +45,11 @@ with `--behind-proxy`. It starts with French (Canada), a home page and a privacy
 plugin from its repository and keep everything you changed in WordPress. For visitors to reach respondents,
 also give `--web-call-center ID`: the SwitchBoard call center whose respondents answer web chats.
 
+**Raspberry Pi** (4 or 5, 8 GB recommended): use a 64-bit system (Raspberry Pi OS 64-bit or Ubuntu), install
+Docker (`curl -fsSL https://get.docker.com | sh`) and run `install.sh` as on any Linux machine. Every image exists
+for ARM64, and SwitchBoardChat is compiled on the Pi itself. The first install takes about an hour; updates are
+quicker. With 4 GB of memory, add swap before the first install (the installer tells you how).
+
 **Windows** (Docker Desktop + Git for Windows): `install.cmd` / `.\install.ps1`, same options. The default
 folder is `%USERPROFILE%\switchboard`, and databases live in Docker volumes.
 

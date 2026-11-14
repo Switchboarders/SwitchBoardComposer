@@ -105,8 +105,16 @@ check_docker() {
         die "$EXIT_DEPS" "Docker Compose $v is too old: 2.17 or newer is needed"
     fi
     case "$(docker version --format '{{.Server.Arch}}' 2>/dev/null)" in
-        arm|armhf|armel|386) die "$EXIT_DEPS" "a 64-bit system is needed (MariaDB has no 32-bit image)" ;;
+        arm|armhf|armel|386) die "$EXIT_DEPS" "a 64-bit system is needed (MariaDB has no 32-bit image). On a Raspberry Pi (3, 4, 5 or Zero 2 W): install \"Raspberry Pi OS (64-bit)\" with Raspberry Pi Imager, then Docker (curl -fsSL https://get.docker.com | sh), and run this again" ;;
     esac
+    # SwitchBoardChat is compiled on this machine (Rust): with little memory the build can be killed
+    local mem_kb swap_kb
+    mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    swap_kb=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    if [ "${mem_kb:-0}" -gt 0 ] && [ $(( (mem_kb + swap_kb) / 1024 )) -lt 6000 ]; then
+        say "Note: $(( mem_kb / 1024 )) MB of memory and $(( swap_kb / 1024 )) MB of swap. Building SwitchBoardChat needs about 6 GB:"
+        say "      if the build stops with \"killed\" or \"signal 9\", add swap (Raspberry Pi OS: sudo dphys-swapfile setup, CONF_SWAPSIZE=4096 in /etc/dphys-swapfile) and run this again."
+    fi
 }
 
 container_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
